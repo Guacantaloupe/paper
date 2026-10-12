@@ -580,8 +580,8 @@ void MainWindow::populate_disassembly(Address address) {
         item.mask = LVIF_TEXT;
         item.iItem = row;
         item.pszText = values[0].data();
-        const auto inserted = ListView_InsertItemW(disassembly_, &item);
-        for (int column = 1; column < 5; ++column) ListView_SetItemTextW(disassembly_, inserted, column, values[static_cast<std::size_t>(column)].data());
+        const auto inserted = ListView_InsertItem(disassembly_, &item);
+        for (int column = 1; column < 5; ++column) ListView_SetItemText(disassembly_, inserted, column, values[static_cast<std::size_t>(column)].data());
         disassembly_addresses_.push_back(parse_address(address_value).value_or(0));
         disassembly_kinds_.push_back(kind);
         ++row;
