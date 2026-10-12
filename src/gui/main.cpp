@@ -21,7 +21,6 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -303,8 +302,15 @@ void setup_style() {
     colors[ImGuiCol_DockingPreview] = ImVec4(0.180f, 0.480f, 0.820f, 0.55f);
 }
 
+ImGuiID paper_dockspace_id() {
+    // Do not derive the ID from the current window: draw_ui() and the layout
+    // builder run at different points in the frame and may have different ID
+    // stacks. A global hash keeps the DockSpace and DockBuilder on the same node.
+    return ImHashStr("PaperDockSpace");
+}
+
 void build_default_layout() {
-    const ImGuiID dockspace = ImGui::GetID("PaperDockSpace");
+    const ImGuiID dockspace = paper_dockspace_id();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::DockBuilderRemoveNode(dockspace);
     ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
@@ -587,11 +593,13 @@ void draw_ui(UiState& state) {
     draw_menu(state);
     handle_shortcuts(state);
     draw_toolbar(state);
-    const ImGuiID dockspace = ImGui::GetID("PaperDockSpace");
+    const ImGuiID dockspace = paper_dockspace_id();
     ImGui::DockSpaceOverViewport(dockspace, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
     static bool layout_initialized = false;
     if (!layout_initialized) {
-        if (!std::filesystem::exists(L"paper_imgui_v2.ini")) build_default_layout();
+        // Always apply the first-run layout once. This also repairs an older
+        // or partially written ImGui .ini without requiring manual deletion.
+        build_default_layout();
         layout_initialized = true;
     }
     draw_functions(state);
@@ -687,7 +695,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-    io.IniFilename = "paper_imgui_v2.ini";
+    io.IniFilename = "paper_imgui_v3.ini";
     setup_style();
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(g_device, g_device_context);
