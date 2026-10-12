@@ -17,7 +17,7 @@ The desktop window follows the classic IDA workflow: Functions navigator on the 
 
 For broader x86-64 decoding, configure with an installed Zydis CMake package and set `PAPER_WITH_ZYDIS=ON`. The built-in decoder remains available as a dependency-free fallback, so the project still builds when Zydis is not installed.
 
-The default desktop-only configuration is `PAPER_BUILD_GUI=ON`, `PAPER_BUILD_AI=OFF`, and `PAPER_BUILD_TESTS=OFF`. In Visual Studio's CMake settings, set the `PAPER_QT_ROOT` cache variable to the Qt MSVC installation directory, for example `C:\Qt\6.8.3\msvc2022_64` (or set `CMAKE_PREFIX_PATH` to the same directory). The GUI configure step now stops with a direct error when Qt is missing instead of silently omitting `paper.exe`. Set `PAPER_BUILD_AI=ON` or `PAPER_BUILD_TESTS=ON` only when those extra targets are needed.
+The default desktop-only configuration is `PAPER_BUILD_GUI=ON`, `PAPER_BUILD_AI=OFF`, and `PAPER_BUILD_TESTS=OFF`. For a project-local setup, place the Qt MSVC installation at `third_party/qt/msvc2022_64`; CMake detects that path automatically. Otherwise set the `PAPER_QT_ROOT` cache variable to a system installation, for example `C:\Qt\6.8.3\msvc2022_64` (or set `CMAKE_PREFIX_PATH` to the same directory). The GUI configure step now stops with a direct error when Qt is missing instead of silently omitting `paper.exe`. Set `PAPER_BUILD_AI=ON` or `PAPER_BUILD_TESTS=ON` only when those extra targets are needed.
 
 ```text
 PAPER_WITH_ZYDIS=ON
