@@ -1,6 +1,6 @@
 # Paper GUI：IDA 风格布局与快捷操作
 
-Paper v0.2 的桌面窗口按经典 IDA 工作方式组织：左侧是 Functions 导航，中间是 IDA View-A 反汇编，顶部有颜色图例和视图标签，右侧是 Xrefs/Properties，底部是 Output。`Hex View-1`、`Structures`、`Enums`、`Imports`、`Exports` 作为可切换标签保留，后续可以继续接入类型编辑和图形视图。
+Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式组织：左侧是 Functions 导航，中间是 IDA View-A 反汇编，顶部是深色快捷工具栏，右侧是 Xrefs/Properties，底部是 Output。`Hex View-1` 和 `Info` 是中间的可切换标签，导入、导出和调用图结果显示在 Properties 面板。
 
 ## 顶部快捷按钮
 
