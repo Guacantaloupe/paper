@@ -49,11 +49,7 @@ if(PAPER_BUILD_AI)
     target_link_libraries(paper_ai PRIVATE paper_core)
 endif()
 
-if(PAPER_BUILD_GUI)
-    if(NOT WIN32)
-        message(FATAL_ERROR "PAPER_BUILD_GUI currently requires Windows and DirectX 11")
-    endif()
-
+if(PAPER_BUILD_GUI AND WIN32)
     # Dear ImGui's docking branch is kept as a small build dependency. A
     # project-local copy is preferred; otherwise CMake fetches a pinned commit.
     set(PAPER_IMGUI_ROOT "${CMAKE_SOURCE_DIR}/third_party/imgui" CACHE PATH
@@ -116,6 +112,10 @@ if(PAPER_BUILD_GUI)
     else()
         target_compile_options(paper PRIVATE -Wall -Wextra -Wpedantic)
     endif()
+endif()
+
+if(PAPER_BUILD_GUI AND NOT WIN32)
+    message(STATUS "The Dear ImGui + DirectX 11 desktop target is available on Windows only; GUI target skipped.")
 endif()
 
 if(PAPER_BUILD_TESTS)
