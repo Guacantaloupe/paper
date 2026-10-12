@@ -114,7 +114,8 @@ bool PeImage::parse(std::string& error) {
     info_.entry_point = info_.image_base + info_.entry_rva;
     headers_size_ = u32(bytes_, optional + 60);
     directory_count_ = pe32_plus ? u32(bytes_, optional + 108) : u32(bytes_, optional + 92);
-    directory_count_ = std::min<std::uint32_t>(directory_count_, directories_.size());
+    directory_count_ = std::min<std::uint32_t>(
+        directory_count_, static_cast<std::uint32_t>(directories_.size()));
     const std::size_t directory_base = optional + (pe32_plus ? 112 : 96);
     for (std::uint32_t i = 0; i < directory_count_; ++i) {
         directories_[i] = {u32(bytes_, directory_base + i * 8), u32(bytes_, directory_base + i * 8 + 4)};
