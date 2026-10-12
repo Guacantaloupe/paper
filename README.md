@@ -9,7 +9,7 @@ The analysis engine does not run a program, perform symbolic execution, call SMT
 
 ## Build
 
-The project uses C++20. On Windows, open the folder with Visual Studio 2022 or configure it with CMake. The `paper` desktop target uses Dear ImGui's docking branch with the DirectX 11 backend and builds with MSVC; Qt is not required. CMake fetches the ImGui docking source automatically when no copy exists in `third_party/imgui`. The optional `paper_ai` target has no GUI dependency, but is disabled by default when the goal is to build only the desktop application.
+The project uses C++20. On Windows, open the folder with Visual Studio 2022 or configure it with CMake. The `paper` desktop target uses Dear ImGui's docking branch with the DirectX 11 backend and builds with MSVC; Qt is not required. CMake fetches a pinned ImGui docking commit automatically when no copy exists in `third_party/imgui`. The optional `paper_ai` target has no GUI dependency, but is disabled by default when the goal is to build only the desktop application.
 
 The desktop target is intended to start by double-clicking `paper.exe`. The AI target is intended to be registered as a local stdio tool by the AI client.
 
