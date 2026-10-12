@@ -54,8 +54,8 @@ if(PAPER_BUILD_GUI)
         message(FATAL_ERROR "PAPER_BUILD_GUI currently requires Windows and DirectX 11")
     endif()
 
-    # Dear ImGui is kept as a small build dependency. A project-local copy is
-    # preferred; otherwise CMake fetches the pinned upstream tag automatically.
+    # Dear ImGui's docking branch is kept as a small build dependency. A
+    # project-local copy is preferred; otherwise CMake fetches it automatically.
     set(PAPER_IMGUI_ROOT "${CMAKE_SOURCE_DIR}/third_party/imgui" CACHE PATH
         "Dear ImGui source directory (optional project-local copy)")
     if(EXISTS "${PAPER_IMGUI_ROOT}/imgui.cpp")
@@ -64,7 +64,7 @@ if(PAPER_BUILD_GUI)
         include(FetchContent)
         FetchContent_Declare(
             imgui
-            URL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b.zip
+            URL https://github.com/ocornut/imgui/archive/refs/heads/docking.zip
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         )
         FetchContent_GetProperties(imgui)
