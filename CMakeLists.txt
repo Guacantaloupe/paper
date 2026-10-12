@@ -55,7 +55,7 @@ if(PAPER_BUILD_GUI)
             src/gui/main_window.cpp
             include/paper/gui/main_window.hpp
         )
-        target_link_libraries(paper PRIVATE paper_core comctl32 comdlg32 shell32)
+        target_link_libraries(paper PRIVATE paper_core comctl32 comdlg32 shell32 user32 gdi32)
         target_include_directories(paper PRIVATE include)
         target_compile_definitions(paper PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
         if(MSVC)
