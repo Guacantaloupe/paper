@@ -305,16 +305,21 @@ void setup_style() {
 
 void build_default_layout() {
     const ImGuiID dockspace = ImGui::GetID("PaperDockSpace");
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::DockBuilderRemoveNode(dockspace);
     ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockspace, ImGui::GetMainViewport()->WorkSize);
+    ImGui::DockBuilderSetNodePos(dockspace, viewport->WorkPos);
+    ImGui::DockBuilderSetNodeSize(dockspace, viewport->WorkSize);
+    ImGuiID toolbar = 0;
     ImGuiID left = 0;
     ImGuiID right = 0;
     ImGuiID bottom = 0;
     ImGuiID center = dockspace;
+    ImGui::DockBuilderSplitNode(center, ImGuiDir_Up, 0.055f, &toolbar, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, &left, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, &right, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.22f, &bottom, &center);
+    ImGui::DockBuilderDockWindow("Toolbar", toolbar);
     ImGui::DockBuilderDockWindow("Functions", left);
     ImGui::DockBuilderDockWindow("Xrefs / Properties", right);
     ImGui::DockBuilderDockWindow("Output", bottom);
@@ -391,7 +396,14 @@ void handle_shortcuts(UiState& state) {
 }
 
 void draw_toolbar(UiState& state) {
-    ImGui::BeginChild("Toolbar", ImVec2(0, 39), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    constexpr ImGuiWindowFlags toolbar_flags = ImGuiWindowFlags_NoTitleBar |
+                                                ImGuiWindowFlags_NoCollapse |
+                                                ImGuiWindowFlags_NoScrollbar |
+                                                ImGuiWindowFlags_NoScrollWithMouse;
+    if (!ImGui::Begin("Toolbar", nullptr, toolbar_flags)) {
+        ImGui::End();
+        return;
+    }
     if (ImGui::Button("Open")) open_binary(state, choose_pe_file());
     ImGui::SameLine();
     if (ImGui::Button("<")) go_back(state);
@@ -429,7 +441,7 @@ void draw_toolbar(UiState& state) {
     if (ImGui::Button("Hex")) state.center_selection_request = 1;
     ImGui::SameLine();
     if (ImGui::Button("AI")) action_ai_help(state);
-    ImGui::EndChild();
+    ImGui::End();
 }
 
 void draw_functions(UiState& state) {
@@ -575,10 +587,11 @@ void draw_ui(UiState& state) {
     draw_menu(state);
     handle_shortcuts(state);
     draw_toolbar(state);
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+    const ImGuiID dockspace = ImGui::GetID("PaperDockSpace");
+    ImGui::DockSpaceOverViewport(dockspace, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
     static bool layout_initialized = false;
     if (!layout_initialized) {
-        if (!std::filesystem::exists(L"paper_imgui.ini")) build_default_layout();
+        if (!std::filesystem::exists(L"paper_imgui_v2.ini")) build_default_layout();
         layout_initialized = true;
     }
     draw_functions(state);
@@ -674,7 +687,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-    io.IniFilename = "paper_imgui.ini";
+    io.IniFilename = "paper_imgui_v2.ini";
     setup_style();
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(g_device, g_device_context);
