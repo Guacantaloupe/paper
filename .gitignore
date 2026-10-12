@@ -14,6 +14,6 @@ out/
 *.so
 *.dylib
 
-# Qt is supplied separately and discovered from this project-local path.
-third_party/qt/
+# Dear ImGui may be supplied as a local checkout; CMake can also fetch it.
+third_party/imgui/
 
