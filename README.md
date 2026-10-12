@@ -9,13 +9,15 @@ The analysis engine does not run a program, perform symbolic execution, call SMT
 
 ## Build
 
-The project uses C++20. On Windows, open the folder with Visual Studio 2022 or configure it with CMake. If Qt 6 is installed, the `paper` desktop target is enabled; the `paper_ai` target has no GUI dependency.
+The project uses C++20. On Windows, open the folder with Visual Studio 2022 or configure it with CMake. If Qt 6 is installed, the `paper` desktop target is enabled. The optional `paper_ai` target has no GUI dependency, but is disabled by default when the goal is to build only the desktop application.
 
 The desktop target is intended to start by double-clicking `paper.exe`. The AI target is intended to be registered as a local stdio tool by the AI client.
 
 The desktop window follows the classic IDA workflow: Functions navigator on the left, IDA View-A disassembly in the center, Xrefs/Properties on the right, and Output at the bottom. The shortcut map is in [`docs/GUI_SHORTCUTS_ZH.md`](docs/GUI_SHORTCUTS_ZH.md).
 
 For broader x86-64 decoding, configure with an installed Zydis CMake package and set `PAPER_WITH_ZYDIS=ON`. The built-in decoder remains available as a dependency-free fallback, so the project still builds when Zydis is not installed.
+
+The default desktop-only configuration is `PAPER_BUILD_GUI=ON`, `PAPER_BUILD_AI=OFF`, and `PAPER_BUILD_TESTS=OFF`. In Visual Studio's CMake settings, set `PAPER_BUILD_AI=ON` or `PAPER_BUILD_TESTS=ON` when those extra targets are needed.
 
 ```text
 PAPER_WITH_ZYDIS=ON
