@@ -14,3 +14,6 @@ out/
 *.so
 *.dylib
 
+# Qt is supplied separately and discovered from this project-local path.
+third_party/qt/
+
