@@ -1,7 +1,7 @@
 # Paper v0.2 架构
 
 ```text
-Qt 6 desktop shell ───────┐
+Native Win32 desktop shell ─┐
                            ├── paper_core ── PE image ── parallel decode ── indexes
 MCP stdio server ──────────┘                         ├── functions / CFG
                                                      ├── xrefs
@@ -9,7 +9,7 @@ MCP stdio server ──────────┘                         ├�
                                                      └── query APIs
 ```
 
-GUI 的布局模拟经典 IDA 工作区：Functions 导航 dock、IDA View-A/Hex View 标签、Xrefs/Properties dock 和 Output dock。工具栏与菜单共用同一组 QAction，因此 `X`、`Ctrl+G`、CFG、Callers/Callees、Imports/Exports、Hex 和 AI/MCP 都能用按钮或快捷键触发。
+GUI 的布局模拟经典 IDA 工作区：Functions 导航 dock、IDA View-A/Hex View 标签、Xrefs/Properties dock 和 Output dock。工具栏与菜单共用同一组 Win32 command ID，因此 `X`、`Ctrl+G`、CFG、Callers/Callees、Imports/Exports、Hex 和 AI/MCP 都能用按钮或快捷键触发。
 
 `paper_core` 不执行样本，也不依赖符号执行、SMT/Z3 或模型推断。PE 文件被读入后，分析线程按可执行节区并行解码；每个线程只写自己的局部结果，主线程按地址合并并建立哈希索引。这样做能避免在查询阶段重新反汇编，也避免多个线程同时修改全局容器。
 

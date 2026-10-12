@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(PAPER_BUILD_GUI "Build the optional Qt 6 desktop application" ON)
+option(PAPER_BUILD_GUI "Build the optional native Win32 desktop application" ON)
 option(PAPER_BUILD_AI "Build the optional JSON-RPC/MCP AI server" OFF)
 option(PAPER_BUILD_TESTS "Build the core smoke tests" OFF)
 option(PAPER_WITH_ZYDIS "Use the Zydis x86-64 decoder backend when available" OFF)
@@ -49,23 +49,22 @@ if(PAPER_BUILD_AI)
 endif()
 
 if(PAPER_BUILD_GUI)
-    find_package(Qt6 COMPONENTS Widgets QUIET)
-    if(Qt6_FOUND)
-        set(CMAKE_AUTOMOC ON)
+    if(WIN32)
         add_executable(paper WIN32
             src/gui/main.cpp
             src/gui/main_window.cpp
             include/paper/gui/main_window.hpp
         )
-        target_link_libraries(paper PRIVATE paper_core Qt6::Widgets)
+        target_link_libraries(paper PRIVATE paper_core comctl32 comdlg32 shell32)
         target_include_directories(paper PRIVATE include)
+        target_compile_definitions(paper PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
         if(MSVC)
             target_compile_options(paper PRIVATE /W4 /permissive-)
         else()
             target_compile_options(paper PRIVATE -Wall -Wextra -Wpedantic)
         endif()
     else()
-        message(STATUS "Qt 6 was not found; the paper desktop target will not be generated.")
+        message(STATUS "The native Paper desktop target is currently available on Windows only.")
     endif()
 endif()
 
