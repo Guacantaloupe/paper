@@ -53,6 +53,14 @@ if(PAPER_BUILD_GUI)
     # Qt MSVC package is installed.  Expose a project-local cache variable so
     # the GUI can be configured without editing the toolchain or source tree.
     set(_paper_project_qt_root "${CMAKE_SOURCE_DIR}/third_party/qt/msvc2022_64")
+    if(NOT EXISTS "${_paper_project_qt_root}/lib/cmake/Qt6/Qt6Config.cmake")
+        file(GLOB _paper_project_qt_candidates LIST_DIRECTORIES true
+            "${CMAKE_SOURCE_DIR}/third_party/qt/*/msvc2022_64")
+        list(SORT _paper_project_qt_candidates ORDER DESCENDING)
+        if(_paper_project_qt_candidates)
+            list(GET _paper_project_qt_candidates 0 _paper_project_qt_root)
+        endif()
+    endif()
     if(EXISTS "${_paper_project_qt_root}/lib/cmake/Qt6/Qt6Config.cmake")
         set(_paper_qt_root_default "${_paper_project_qt_root}")
     else()
