@@ -108,7 +108,9 @@ if(PAPER_BUILD_GUI AND WIN32)
         WIN32_LEAN_AND_MEAN
     )
     if(MSVC)
-        target_compile_options(paper PRIVATE /W4 /permissive-)
+        # The GUI source contains Chinese labels; make MSVC decode all source
+        # files as UTF-8 regardless of the machine's active code page.
+        target_compile_options(paper PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(paper PRIVATE -Wall -Wextra -Wpedantic)
     endif()
