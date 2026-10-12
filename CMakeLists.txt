@@ -55,7 +55,7 @@ if(PAPER_BUILD_GUI)
     endif()
 
     # Dear ImGui's docking branch is kept as a small build dependency. A
-    # project-local copy is preferred; otherwise CMake fetches it automatically.
+    # project-local copy is preferred; otherwise CMake fetches a pinned commit.
     set(PAPER_IMGUI_ROOT "${CMAKE_SOURCE_DIR}/third_party/imgui" CACHE PATH
         "Dear ImGui source directory (optional project-local copy)")
     if(EXISTS "${PAPER_IMGUI_ROOT}/imgui.cpp")
@@ -64,7 +64,7 @@ if(PAPER_BUILD_GUI)
         include(FetchContent)
         FetchContent_Declare(
             imgui
-            URL https://github.com/ocornut/imgui/archive/refs/heads/docking.zip
+            URL https://github.com/ocornut/imgui/archive/778992face67ecefaa5c2932db4b2101545ea4df.zip
             DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         )
         FetchContent_GetProperties(imgui)
