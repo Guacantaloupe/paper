@@ -49,23 +49,35 @@ if(PAPER_BUILD_AI)
 endif()
 
 if(PAPER_BUILD_GUI)
+    # Visual Studio's CMake integration does not automatically know where the
+    # Qt MSVC package is installed.  Expose a project-local cache variable so
+    # the GUI can be configured without editing the toolchain or source tree.
+    set(PAPER_QT_ROOT "" CACHE PATH
+        "Qt 6 MSVC installation directory (for example C:/Qt/6.8.3/msvc2022_64)")
+    if(PAPER_QT_ROOT)
+        list(PREPEND CMAKE_PREFIX_PATH "${PAPER_QT_ROOT}")
+    endif()
+
     find_package(Qt6 COMPONENTS Widgets QUIET)
-    if(Qt6_FOUND)
-        set(CMAKE_AUTOMOC ON)
-        add_executable(paper WIN32
-            src/gui/main.cpp
-            src/gui/main_window.cpp
-            include/paper/gui/main_window.hpp
-        )
-        target_link_libraries(paper PRIVATE paper_core Qt6::Widgets)
-        target_include_directories(paper PRIVATE include)
-        if(MSVC)
-            target_compile_options(paper PRIVATE /W4 /permissive-)
-        else()
-            target_compile_options(paper PRIVATE -Wall -Wextra -Wpedantic)
-        endif()
+    if(NOT Qt6_FOUND)
+        message(FATAL_ERROR
+            "Qt 6 Widgets was not found. Install the Qt MSVC 2022 64-bit package "
+            "and set PAPER_QT_ROOT to its msvc2022_64 directory (or set "
+            "CMAKE_PREFIX_PATH) before configuring the paper target.")
+    endif()
+
+    set(CMAKE_AUTOMOC ON)
+    add_executable(paper WIN32
+        src/gui/main.cpp
+        src/gui/main_window.cpp
+        include/paper/gui/main_window.hpp
+    )
+    target_link_libraries(paper PRIVATE paper_core Qt6::Widgets)
+    target_include_directories(paper PRIVATE include)
+    if(MSVC)
+        target_compile_options(paper PRIVATE /W4 /permissive-)
     else()
-        message(STATUS "Qt 6 was not found; the paper desktop target will not be generated.")
+        target_compile_options(paper PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endif()
 
