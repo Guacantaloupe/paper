@@ -1,0 +1,19 @@
+name: Windows MSVC
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure MSVC desktop build
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DPAPER_BUILD_GUI=ON -DPAPER_BUILD_AI=OFF -DPAPER_BUILD_TESTS=OFF -DPAPER_WITH_ZYDIS=OFF
+
+      - name: Build paper.exe
+        run: cmake --build build --config Release --target paper --parallel
