@@ -1,6 +1,3 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-
 #include <windows.h>
 #include <commdlg.h>
 #include <d3d11.h>
@@ -12,6 +9,11 @@
 #include "imgui_internal.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
+
+// The Win32 backend intentionally keeps this declaration in a #if 0 block so
+// including the backend header does not pull <windows.h> into every consumer.
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg,
+                                                              WPARAM wParam, LPARAM lParam);
 
 #include <algorithm>
 #include <array>
@@ -573,10 +575,10 @@ void draw_ui(UiState& state) {
     draw_menu(state);
     handle_shortcuts(state);
     draw_toolbar(state);
-    ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
     static bool layout_initialized = false;
     if (!layout_initialized) {
-        if (!std::filesystem::exists("paper_imgui.ini")) build_default_layout();
+        if (!std::filesystem::exists(L"paper_imgui.ini")) build_default_layout();
         layout_initialized = true;
     }
     draw_functions(state);
