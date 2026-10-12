@@ -5,10 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(PAPER_BUILD_GUI "Build the optional Qt 6 desktop application" ON)
+option(PAPER_BUILD_GUI "Build the Dear ImGui + DirectX 11 desktop application" ON)
 option(PAPER_BUILD_AI "Build the optional JSON-RPC/MCP AI server" OFF)
 option(PAPER_BUILD_TESTS "Build the core smoke tests" OFF)
 option(PAPER_WITH_ZYDIS "Use the Zydis x86-64 decoder backend when available" OFF)
+option(PAPER_FETCH_IMGUI "Fetch Dear ImGui when no project-local copy is present" ON)
 
 find_package(Threads REQUIRED)
 
@@ -49,45 +50,67 @@ if(PAPER_BUILD_AI)
 endif()
 
 if(PAPER_BUILD_GUI)
-    # Visual Studio's CMake integration does not automatically know where the
-    # Qt MSVC package is installed.  Expose a project-local cache variable so
-    # the GUI can be configured without editing the toolchain or source tree.
-    set(_paper_project_qt_root "${CMAKE_SOURCE_DIR}/third_party/qt/msvc2022_64")
-    if(NOT EXISTS "${_paper_project_qt_root}/lib/cmake/Qt6/Qt6Config.cmake")
-        file(GLOB _paper_project_qt_candidates LIST_DIRECTORIES true
-            "${CMAKE_SOURCE_DIR}/third_party/qt/*/msvc2022_64")
-        list(SORT _paper_project_qt_candidates ORDER DESCENDING)
-        if(_paper_project_qt_candidates)
-            list(GET _paper_project_qt_candidates 0 _paper_project_qt_root)
+    if(NOT WIN32)
+        message(FATAL_ERROR "PAPER_BUILD_GUI currently requires Windows and DirectX 11")
+    endif()
+
+    # Dear ImGui is kept as a small build dependency. A project-local copy is
+    # preferred; otherwise CMake fetches the pinned upstream tag automatically.
+    set(PAPER_IMGUI_ROOT "${CMAKE_SOURCE_DIR}/third_party/imgui" CACHE PATH
+        "Dear ImGui source directory (optional project-local copy)")
+    if(EXISTS "${PAPER_IMGUI_ROOT}/imgui.cpp")
+        set(PAPER_IMGUI_SOURCE_DIR "${PAPER_IMGUI_ROOT}")
+    elseif(PAPER_FETCH_IMGUI)
+        include(FetchContent)
+        FetchContent_Declare(
+            imgui
+            URL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b.zip
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        )
+        FetchContent_GetProperties(imgui)
+        if(NOT imgui_POPULATED)
+            FetchContent_Populate(imgui)
         endif()
-    endif()
-    if(EXISTS "${_paper_project_qt_root}/lib/cmake/Qt6/Qt6Config.cmake")
-        set(_paper_qt_root_default "${_paper_project_qt_root}")
+        set(PAPER_IMGUI_SOURCE_DIR "${imgui_SOURCE_DIR}")
     else()
-        set(_paper_qt_root_default "")
-    endif()
-    set(PAPER_QT_ROOT "${_paper_qt_root_default}" CACHE PATH
-        "Qt 6 MSVC installation directory (project-local or system path)")
-    if(PAPER_QT_ROOT)
-        list(PREPEND CMAKE_PREFIX_PATH "${PAPER_QT_ROOT}")
-    endif()
-
-    find_package(Qt6 COMPONENTS Widgets QUIET)
-    if(NOT Qt6_FOUND)
         message(FATAL_ERROR
-            "Qt 6 Widgets was not found. Install the Qt MSVC 2022 64-bit package "
-            "and set PAPER_QT_ROOT to its msvc2022_64 directory (or set "
-            "CMAKE_PREFIX_PATH) before configuring the paper target.")
+            "Dear ImGui was not found. Put it in third_party/imgui or enable "
+            "PAPER_FETCH_IMGUI.")
     endif()
 
-    set(CMAKE_AUTOMOC ON)
-    add_executable(paper WIN32
-        src/gui/main.cpp
-        src/gui/main_window.cpp
-        include/paper/gui/main_window.hpp
+    add_library(paper_imgui STATIC
+        "${PAPER_IMGUI_SOURCE_DIR}/imgui.cpp"
+        "${PAPER_IMGUI_SOURCE_DIR}/imgui_draw.cpp"
+        "${PAPER_IMGUI_SOURCE_DIR}/imgui_tables.cpp"
+        "${PAPER_IMGUI_SOURCE_DIR}/imgui_widgets.cpp"
+        "${PAPER_IMGUI_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
+        "${PAPER_IMGUI_SOURCE_DIR}/backends/imgui_impl_dx11.cpp"
     )
-    target_link_libraries(paper PRIVATE paper_core Qt6::Widgets)
+    target_include_directories(paper_imgui PUBLIC
+        "${PAPER_IMGUI_SOURCE_DIR}"
+        "${PAPER_IMGUI_SOURCE_DIR}/backends"
+    )
+
+    add_executable(paper WIN32 src/gui/main.cpp)
     target_include_directories(paper PRIVATE include)
+    target_link_libraries(paper PRIVATE
+        paper_core
+        paper_imgui
+        d3d11
+        dxgi
+        d3dcompiler
+        user32
+        gdi32
+        shell32
+        ole32
+        comdlg32
+    )
+    target_compile_definitions(paper PRIVATE
+        UNICODE
+        _UNICODE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
     if(MSVC)
         target_compile_options(paper PRIVATE /W4 /permissive-)
     else()
