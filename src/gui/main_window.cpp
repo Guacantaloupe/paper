@@ -1,542 +1,374 @@
-#define UNICODE
-#define _UNICODE
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
 #include "paper/gui/main_window.hpp"
 
-#include <commctrl.h>
-#include <commdlg.h>
-#include <shellapi.h>
+#include <QAction>
+#include <QAbstractItemView>
+#include <QColor>
+#include <QCoreApplication>
+#include <QDockWidget>
+#include <QFileDialog>
+#include <QFontDatabase>
+#include <QHeaderView>
+#include <QHBoxLayout>
+#include <QInputDialog>
+#include <QKeySequence>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QMenu>
+#include <QMenuBar>
+#include <QPlainTextEdit>
+#include <QStatusBar>
+#include <QStyle>
+#include <QStringList>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QToolBar>
+#include <QVariant>
+#include <QVBoxLayout>
 
 #include <algorithm>
-#include <array>
-#include <cctype>
-#include <cwctype>
-#include <iomanip>
-#include <iterator>
-#include <sstream>
-#include <string>
-#include <string_view>
+#include <cstdint>
+#include <optional>
 
 namespace paper {
 namespace {
 
-constexpr wchar_t kWindowClass[] = L"PaperNativeMainWindow";
+QString json_string(const Json& item, std::string_view key) {
+    const auto* value = item.find(key);
+    return value && value->is_string() ? QString::fromStdString(value->as_string()) : QString();
+}
 
-enum : int {
-    IDM_OPEN = 1001,
-    IDM_EXIT = 1002,
-    IDM_BACK = 1003,
-    IDM_FORWARD = 1004,
-    IDM_GOTO = 1005,
-    IDM_ENTRY = 1006,
-    IDM_XREFS = 1007,
-    IDM_CFG = 1008,
-    IDM_CALLERS = 1009,
-    IDM_CALLEES = 1010,
-    IDM_IMPORTS = 1011,
-    IDM_EXPORTS = 1012,
-    IDM_HEX = 1013,
-    IDM_AI = 1014,
+QString json_kind(const Json& item) { return json_string(item, "kind"); }
 
-    IDC_FUNCTION_FILTER = 2001,
-    IDC_FUNCTIONS = 2002,
-    IDC_MAIN_TABS = 2003,
-    IDC_DISASSEMBLY = 2004,
-    IDC_HEX_VIEW = 2005,
-    IDC_STRUCTURES_VIEW = 2006,
-    IDC_ENUMS_VIEW = 2007,
-    IDC_IMPORTS_VIEW = 2008,
-    IDC_EXPORTS_VIEW = 2009,
-    IDC_SIDE_TABS = 2010,
-    IDC_XREFS = 2011,
-    IDC_PROPERTIES = 2012,
-    IDC_LOG = 2013,
-    IDC_STATUS = 2014,
-    IDC_ADDRESS = 2015
-};
+QLabel* legend_label(const QString& text, const QColor& color, QWidget* parent) {
+    auto* label = new QLabel(text, parent);
+    label->setAutoFillBackground(true);
+    label->setStyleSheet(QString("QLabel { background: %1; color: #202020; padding: 2px 8px; border: 1px solid #b0b0b0; }").arg(color.name()));
+    return label;
+}
 
-std::uint64_t number_or(const Json& object, std::string_view key) {
-    const auto* value = object.find(key);
-    return value ? value->as_u64() : 0;
+QPlainTextEdit* read_only_text(QWidget* parent) {
+    auto* editor = new QPlainTextEdit(parent);
+    editor->setReadOnly(true);
+    editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+    editor->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    return editor;
+}
+
+QString pretty_address(const QString& text) {
+    return text.isEmpty() ? QStringLiteral("-") : text;
 }
 
 } // namespace
 
-MainWindow::MainWindow() = default;
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    setWindowTitle("Paper — IDA-style Static Analysis");
+    resize(1680, 1000);
+    setDockNestingEnabled(true);
 
-MainWindow::~MainWindow() {
-    if (accelerators_) DestroyAcceleratorTable(accelerators_);
-}
+    auto* open_action = new QAction(style()->standardIcon(QStyle::SP_DialogOpenButton), "Open binary…", this);
+    open_action->setShortcut(QKeySequence(QKeySequence::Open));
+    open_action->setStatusTip("Open an EXE, DLL, or SYS image");
+    connect(open_action, &QAction::triggered, this, &MainWindow::open_file);
 
-bool MainWindow::create(HINSTANCE instance) {
-    instance_ = instance;
+    back_action_ = new QAction(style()->standardIcon(QStyle::SP_ArrowBack), "Back", this);
+    back_action_->setShortcut(QKeySequence(QStringLiteral("Alt+Left")));
+    back_action_->setEnabled(false);
+    connect(back_action_, &QAction::triggered, this, &MainWindow::go_back);
 
-    INITCOMMONCONTROLSEX controls{};
-    controls.dwSize = sizeof(controls);
-    controls.dwICC = ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES;
-    InitCommonControlsEx(&controls);
+    forward_action_ = new QAction(style()->standardIcon(QStyle::SP_ArrowForward), "Forward", this);
+    forward_action_->setShortcut(QKeySequence(QStringLiteral("Alt+Right")));
+    forward_action_->setEnabled(false);
+    connect(forward_action_, &QAction::triggered, this, &MainWindow::go_forward);
 
-    WNDCLASSEXW window_class{};
-    window_class.cbSize = sizeof(window_class);
-    window_class.hInstance = instance_;
-    window_class.lpfnWndProc = &MainWindow::window_proc;
-    window_class.lpszClassName = kWindowClass;
-    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    window_class.hIconSm = window_class.hIcon;
-    window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    if (!RegisterClassExW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    auto* goto_action = new QAction("Go to address…", this);
+    goto_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
+    connect(goto_action, &QAction::triggered, this, &MainWindow::jump_to_address);
 
-    window_ = CreateWindowExW(
-        WS_EX_APPWINDOW,
-        kWindowClass,
-        L"Paper - IDA-style Static Analysis",
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1680, 1000,
-        nullptr, nullptr, instance_, this);
-    return window_ != nullptr;
-}
+    auto* entry_action = new QAction("Entry point", this);
+    entry_action->setShortcut(QKeySequence(Qt::Key_Home));
+    connect(entry_action, &QAction::triggered, this, &MainWindow::go_to_entry);
 
-void MainWindow::show(int command) {
-    ShowWindow(window_, command);
-    UpdateWindow(window_);
-}
+    auto* xrefs_action = new QAction("Xrefs", this);
+    xrefs_action->setShortcut(QKeySequence(QStringLiteral("X")));
+    xrefs_action->setStatusTip("Show incoming and outgoing cross-references");
+    connect(xrefs_action, &QAction::triggered, this, &MainWindow::show_xrefs);
 
-int MainWindow::run() {
-    MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-        if (!accelerators_ || !TranslateAcceleratorW(window_, accelerators_, &message)) {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-    return static_cast<int>(message.wParam);
-}
+    auto* cfg_action = new QAction("CFG", this);
+    cfg_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
+    connect(cfg_action, &QAction::triggered, this, &MainWindow::show_cfg);
 
-LRESULT CALLBACK MainWindow::window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param) {
-    MainWindow* self = reinterpret_cast<MainWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(l_param);
-        self = static_cast<MainWindow*>(create->lpCreateParams);
-        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-        self->window_ = window;
-    }
-    return self ? self->message_proc(message, w_param, l_param) : DefWindowProcW(window, message, w_param, l_param);
-}
+    auto* callers_action = new QAction("Callers", this);
+    callers_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+U")));
+    connect(callers_action, &QAction::triggered, this, &MainWindow::show_callers);
 
-LRESULT MainWindow::message_proc(UINT message, WPARAM w_param, LPARAM l_param) {
-    switch (message) {
-    case WM_CREATE:
-        create_menu();
-        create_controls();
-        create_accelerators();
-        layout_controls();
-        return 0;
+    auto* callees_action = new QAction("Callees", this);
+    callees_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+D")));
+    connect(callees_action, &QAction::triggered, this, &MainWindow::show_callees);
 
-    case WM_SIZE:
-        layout_controls();
-        return 0;
+    auto* imports_action = new QAction("Imports", this);
+    imports_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+I")));
+    connect(imports_action, &QAction::triggered, this, &MainWindow::show_imports);
 
-    case WM_COMMAND: {
-        const int id = LOWORD(w_param);
-        const int code = HIWORD(w_param);
-        if (id == IDC_FUNCTION_FILTER && code == EN_CHANGE) {
-            filter_functions();
-            return 0;
-        }
-        if (id == IDC_FUNCTIONS && code == LBN_SELCHANGE) {
-            show_selected_function();
-            return 0;
-        }
-        if (id == IDC_XREFS && code == LBN_DBLCLK) {
-            jump_to_xref();
-            return 0;
-        }
-        switch (id) {
-        case IDM_OPEN: open_file(); break;
-        case IDM_EXIT: DestroyWindow(window_); break;
-        case IDM_BACK: go_back(); break;
-        case IDM_FORWARD: go_forward(); break;
-        case IDM_GOTO: jump_to_address(); break;
-        case IDM_ENTRY: go_to_entry(); break;
-        case IDM_XREFS: show_xrefs(); break;
-        case IDM_CFG: show_cfg(); break;
-        case IDM_CALLERS: show_callers(); break;
-        case IDM_CALLEES: show_callees(); break;
-        case IDM_IMPORTS: show_imports(); break;
-        case IDM_EXPORTS: show_exports(); break;
-        case IDM_HEX: show_hex_view(); break;
-        case IDM_AI: show_ai_help(); break;
-        default: break;
-        }
-        return 0;
-    }
+    auto* exports_action = new QAction("Exports", this);
+    exports_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+E")));
+    connect(exports_action, &QAction::triggered, this, &MainWindow::show_exports);
 
-    case WM_NOTIFY: {
-        const auto* header = reinterpret_cast<const NMHDR*>(l_param);
-        if (header->hwndFrom == main_tabs_ && header->code == TCN_SELCHANGE) {
-            select_main_tab(TabCtrl_GetCurSel(main_tabs_));
-            return 0;
-        }
-        if (header->hwndFrom == side_tabs_ && header->code == TCN_SELCHANGE) {
-            select_side_tab(TabCtrl_GetCurSel(side_tabs_));
-            return 0;
-        }
-        if (header->hwndFrom == disassembly_ && header->code == NM_CLICK) {
-            const auto* activate = reinterpret_cast<const NMITEMACTIVATE*>(l_param);
-            if (activate->iItem >= 0) show_selected_disassembly_row(activate->iItem);
-            return 0;
-        }
-        if (header->hwndFrom == disassembly_ && header->code == NM_CUSTOMDRAW) {
-            const auto* draw = reinterpret_cast<const NMLVCUSTOMDRAW*>(l_param);
-            if (draw->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
-            if (draw->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT)) {
-                const auto row = static_cast<std::size_t>(draw->nmcd.dwItemSpec);
-                if (row < disassembly_kinds_.size()) {
-                    const auto& kind = disassembly_kinds_[row];
-                    if (kind == L"call" || kind == L"indirect_call")
-                        const_cast<NMLVCUSTOMDRAW*>(draw)->clrText = RGB(138, 59, 18);
-                    else if (kind == L"jump" || kind == L"conditional_jump")
-                        const_cast<NMLVCUSTOMDRAW*>(draw)->clrText = RGB(107, 63, 149);
-                    else if (kind == L"return")
-                        const_cast<NMLVCUSTOMDRAW*>(draw)->clrText = RGB(139, 26, 26);
-                }
-                return CDRF_DODEFAULT;
-            }
-        }
-        break;
-    }
+    auto* hex_action = new QAction("Hex view", this);
+    hex_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+H")));
+    connect(hex_action, &QAction::triggered, this, &MainWindow::show_hex_view);
 
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
+    auto* ai_action = new QAction("AI / MCP help", this);
+    ai_action->setShortcut(QKeySequence(QKeySequence::HelpContents));
+    connect(ai_action, &QAction::triggered, this, &MainWindow::show_ai_help);
 
-    default:
-        break;
-    }
-    return DefWindowProcW(window_, message, w_param, l_param);
-}
+    // The main IDA View-A surface: legend strip, tabbed views, and a dense
+    // monospaced instruction table with address/bytes/mnemonic/operands.
+    auto* central = new QWidget(this);
+    auto* central_layout = new QVBoxLayout(central);
+    central_layout->setContentsMargins(0, 0, 0, 0);
+    central_layout->setSpacing(0);
 
-void MainWindow::create_menu() {
-    HMENU root = CreateMenu();
-    HMENU file = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, IDM_OPEN, L"Open binary...\tCtrl+O");
-    AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(file, MF_STRING, IDM_EXIT, L"Exit");
-    AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"File");
+    auto* legend = new QWidget(central);
+    auto* legend_layout = new QHBoxLayout(legend);
+    legend_layout->setContentsMargins(6, 4, 6, 4);
+    legend_layout->setSpacing(4);
+    legend_layout->addWidget(legend_label("Library function", QColor("#b9e5ff"), legend));
+    legend_layout->addWidget(legend_label("Regular function", QColor("#bce8ff"), legend));
+    legend_layout->addWidget(legend_label("Instruction", QColor("#f4cfb8"), legend));
+    legend_layout->addWidget(legend_label("Data", QColor("#d8d8d8"), legend));
+    legend_layout->addWidget(legend_label("Unexplored", QColor("#dedea0"), legend));
+    legend_layout->addWidget(legend_label("External symbol", QColor("#efb5ee"), legend));
+    legend_layout->addWidget(legend_label("Lumina function", QColor("#a8eaa8"), legend));
+    legend_layout->addStretch(1);
+    central_layout->addWidget(legend);
 
-    HMENU navigate = CreatePopupMenu();
-    AppendMenuW(navigate, MF_STRING, IDM_BACK, L"Back\tAlt+Left");
-    AppendMenuW(navigate, MF_STRING, IDM_FORWARD, L"Forward\tAlt+Right");
-    AppendMenuW(navigate, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(navigate, MF_STRING, IDM_GOTO, L"Go to address...\tCtrl+G");
-    AppendMenuW(navigate, MF_STRING, IDM_ENTRY, L"Entry point\tHome");
-    AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(navigate), L"Navigate");
+    views_ = new QTabWidget(central);
+    views_->setDocumentMode(true);
+    views_->setUsesScrollButtons(true);
 
-    HMENU analysis = CreatePopupMenu();
-    AppendMenuW(analysis, MF_STRING, IDM_XREFS, L"Xrefs\tX");
-    AppendMenuW(analysis, MF_STRING, IDM_CFG, L"CFG\tCtrl+Shift+F");
-    AppendMenuW(analysis, MF_STRING, IDM_CALLERS, L"Callers\tCtrl+Shift+U");
-    AppendMenuW(analysis, MF_STRING, IDM_CALLEES, L"Callees\tCtrl+Shift+D");
-    AppendMenuW(analysis, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(analysis, MF_STRING, IDM_IMPORTS, L"Imports\tCtrl+I");
-    AppendMenuW(analysis, MF_STRING, IDM_EXPORTS, L"Exports\tCtrl+E");
-    AppendMenuW(analysis, MF_STRING, IDM_HEX, L"Hex view\tCtrl+H");
-    AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(analysis), L"Analysis");
+    auto* ida_view = new QWidget(views_);
+    auto* ida_layout = new QVBoxLayout(ida_view);
+    ida_layout->setContentsMargins(0, 0, 0, 0);
+    disassembly_ = new QTableWidget(ida_view);
+    disassembly_->setColumnCount(5);
+    disassembly_->setHorizontalHeaderLabels(QStringList{"Address", "Bytes", "Mnemonic", "Operands", "Comment"});
+    disassembly_->verticalHeader()->setVisible(false);
+    disassembly_->horizontalHeader()->setStretchLastSection(true);
+    disassembly_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    disassembly_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    disassembly_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    disassembly_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    disassembly_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    disassembly_->setSelectionMode(QAbstractItemView::SingleSelection);
+    disassembly_->setShowGrid(false);
+    disassembly_->setAlternatingRowColors(true);
+    disassembly_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    disassembly_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    disassembly_->setStyleSheet("QTableWidget { background: #ffffff; alternate-background-color: #f4f6f8; } QTableWidget::item:selected { background: #c9d7e8; color: #111111; }");
+    ida_layout->addWidget(disassembly_);
+    views_->addTab(ida_view, "IDA View-A");
 
-    HMENU help = CreatePopupMenu();
-    AppendMenuW(help, MF_STRING, IDM_AI, L"AI / MCP help\tF1");
-    AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(help), L"Help");
-    SetMenu(window_, root);
-}
+    hex_view_ = read_only_text(views_);
+    structures_view_ = read_only_text(views_);
+    structures_view_->setPlainText("Structures\n\nType information will be populated by the symbol/type editor.");
+    enums_view_ = read_only_text(views_);
+    enums_view_->setPlainText("Enums\n\nEnum definitions will be populated by the symbol/type editor.");
+    imports_view_ = read_only_text(views_);
+    exports_view_ = read_only_text(views_);
+    views_->addTab(hex_view_, "Hex View-1");
+    views_->addTab(structures_view_, "Structures");
+    views_->addTab(enums_view_, "Enums");
+    views_->addTab(imports_view_, "Imports");
+    views_->addTab(exports_view_, "Exports");
+    central_layout->addWidget(views_, 1);
+    setCentralWidget(central);
 
-void MainWindow::create_controls() {
-    default_font_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    fixed_font_ = static_cast<HFONT>(GetStockObject(ANSI_FIXED_FONT));
+    // Left IDA-style Functions navigator.
+    functions_dock_ = new QDockWidget("Functions", this);
+    functions_dock_->setObjectName("FunctionsDock");
+    functions_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    auto* functions_panel = new QWidget(functions_dock_);
+    auto* functions_layout = new QVBoxLayout(functions_panel);
+    functions_layout->setContentsMargins(4, 4, 4, 4);
+    function_filter_ = new QLineEdit(functions_panel);
+    function_filter_->setPlaceholderText("Filter functions…  (Ctrl+F)");
+    functions_layout->addWidget(function_filter_);
+    functions_ = new QListWidget(functions_panel);
+    functions_->setAlternatingRowColors(true);
+    functions_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    functions_layout->addWidget(functions_, 1);
+    functions_dock_->setWidget(functions_panel);
+    addDockWidget(Qt::LeftDockWidgetArea, functions_dock_);
+    functions_dock_->setMinimumWidth(330);
 
-    open_button_ = create_control(0, L"BUTTON", L"Open", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_OPEN, instance_);
-    back_button_ = create_control(0, L"BUTTON", L"Back", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_BACK, instance_);
-    forward_button_ = create_control(0, L"BUTTON", L"Forward", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_FORWARD, instance_);
-    xrefs_button_ = create_control(0, L"BUTTON", L"Xrefs", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_XREFS, instance_);
-    cfg_button_ = create_control(0, L"BUTTON", L"CFG", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_CFG, instance_);
-    callers_button_ = create_control(0, L"BUTTON", L"Callers", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_CALLERS, instance_);
-    callees_button_ = create_control(0, L"BUTTON", L"Callees", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_CALLEES, instance_);
-    imports_button_ = create_control(0, L"BUTTON", L"Imports", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_IMPORTS, instance_);
-    exports_button_ = create_control(0, L"BUTTON", L"Exports", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_EXPORTS, instance_);
-    hex_button_ = create_control(0, L"BUTTON", L"Hex", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_HEX, instance_);
-    ai_button_ = create_control(0, L"BUTTON", L"AI", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_AI, instance_);
-    address_label_ = create_control(0, L"STATIC", L"Address:", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, 0, 0, 0, 0, window_, 0, instance_);
-    address_edit_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 0, 0, window_, IDC_ADDRESS, instance_);
-    go_button_ = create_control(0, L"BUTTON", L"Go", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window_, IDM_GOTO, instance_);
+    // Right-side Xrefs and Properties panes.
+    side_dock_ = new QDockWidget("Xrefs / Properties", this);
+    side_dock_->setObjectName("SideDock");
+    side_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    auto* side_tabs = new QTabWidget(side_dock_);
+    xrefs_ = new QListWidget(side_tabs);
+    xrefs_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    properties_ = read_only_text(side_tabs);
+    side_tabs->addTab(xrefs_, "Xrefs");
+    side_tabs->addTab(properties_, "Properties");
+    side_dock_->setWidget(side_tabs);
+    addDockWidget(Qt::RightDockWidgetArea, side_dock_);
+    side_dock_->setMinimumWidth(360);
 
-    functions_label_ = create_control(0, L"STATIC", L"Functions", WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, window_, 0, instance_);
-    function_filter_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 0, 0, window_, IDC_FUNCTION_FILTER, instance_);
-    SendMessageW(function_filter_, EM_SETCUEBANNER, FALSE, reinterpret_cast<LPARAM>(L"Filter functions...  (Ctrl+F)"));
-    functions_ = create_control(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 0, 0, 0, 0, window_, IDC_FUNCTIONS, instance_);
+    // Bottom output pane mirrors IDA's message/output area without stealing
+    // space from the disassembly until the user needs it.
+    log_dock_ = new QDockWidget("Output", this);
+    log_dock_->setObjectName("OutputDock");
+    log_dock_->setAllowedAreas(Qt::BottomDockWidgetArea);
+    log_ = read_only_text(log_dock_);
+    log_->setMaximumBlockCount(1000);
+    log_dock_->setWidget(log_);
+    addDockWidget(Qt::BottomDockWidgetArea, log_dock_);
+    log_dock_->resize(100, 150);
 
-    main_tabs_ = create_control(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, 0, 0, window_, IDC_MAIN_TABS, instance_);
-    const std::array<LPCWSTR, 6> main_tab_names{L"IDA View-A", L"Hex View-1", L"Structures", L"Enums", L"Imports", L"Exports"};
-    for (int index = 0; index < static_cast<int>(main_tab_names.size()); ++index) {
-        TCITEMW item{};
-        item.mask = TCIF_TEXT;
-        item.pszText = const_cast<LPWSTR>(main_tab_names[static_cast<std::size_t>(index)]);
-        TabCtrl_InsertItem(main_tabs_, index, &item);
-    }
+    connect(function_filter_, &QLineEdit::textChanged, this, &MainWindow::filter_functions);
+    connect(functions_, &QListWidget::itemSelectionChanged, this, &MainWindow::show_selected_function);
+    connect(xrefs_, &QListWidget::itemDoubleClicked, this, &MainWindow::jump_to_xref);
+    connect(disassembly_, &QTableWidget::cellClicked, this, &MainWindow::show_selected_disassembly_row);
 
-    disassembly_ = create_control(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 0, 0, 0, 0, window_, IDC_DISASSEMBLY, instance_);
-    ListView_SetExtendedListViewStyle(disassembly_, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-    const std::array<LPCWSTR, 5> columns{L"Address", L"Bytes", L"Mnemonic", L"Operands", L"Comment"};
-    const std::array<int, 5> widths{120, 220, 110, 300, 260};
-    for (int index = 0; index < static_cast<int>(columns.size()); ++index) {
-        LVCOLUMNW column{};
-        column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-        column.pszText = const_cast<LPWSTR>(columns[static_cast<std::size_t>(index)]);
-        column.cx = widths[static_cast<std::size_t>(index)];
-        column.iSubItem = index;
-        ListView_InsertColumn(disassembly_, index, &column);
-    }
+    // Menus intentionally expose the same actions as the toolbar so every
+    // high-value reverse-engineering query is reachable without mouse use.
+    auto* file_menu = menuBar()->addMenu("File");
+    file_menu->addAction(open_action);
+    file_menu->addSeparator();
+    auto* exit_action = new QAction("Exit", this);
+    exit_action->setShortcut(QKeySequence(QKeySequence::Quit));
+    connect(exit_action, &QAction::triggered, this, &QWidget::close);
+    file_menu->addAction(exit_action);
 
-    hex_view_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL, 0, 0, 0, 0, window_, IDC_HEX_VIEW, instance_);
-    structures_view_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"Structures\r\n\r\nType information will be populated by the symbol/type editor.", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL, 0, 0, 0, 0, window_, IDC_STRUCTURES_VIEW, instance_);
-    enums_view_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"Enums\r\n\r\nEnum definitions will be populated by the symbol/type editor.", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL, 0, 0, 0, 0, window_, IDC_ENUMS_VIEW, instance_);
-    imports_view_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL, 0, 0, 0, 0, window_, IDC_IMPORTS_VIEW, instance_);
-    exports_view_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL, 0, 0, 0, 0, window_, IDC_EXPORTS_VIEW, instance_);
+    auto* navigate_menu = menuBar()->addMenu("Navigate");
+    navigate_menu->addAction(back_action_);
+    navigate_menu->addAction(forward_action_);
+    navigate_menu->addSeparator();
+    navigate_menu->addAction(goto_action);
+    navigate_menu->addAction(entry_action);
 
-    side_tabs_ = create_control(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, 0, 0, window_, IDC_SIDE_TABS, instance_);
-    const std::array<LPCWSTR, 2> side_tab_names{L"Xrefs", L"Properties"};
-    for (int index = 0; index < static_cast<int>(side_tab_names.size()); ++index) {
-        TCITEMW item{};
-        item.mask = TCIF_TEXT;
-        item.pszText = const_cast<LPWSTR>(side_tab_names[static_cast<std::size_t>(index)]);
-        TabCtrl_InsertItem(side_tabs_, index, &item);
-    }
-    xrefs_ = create_control(WS_EX_CLIENTEDGE, L"LISTBOX", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT, 0, 0, 0, 0, window_, IDC_XREFS, instance_);
-    properties_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL, 0, 0, 0, 0, window_, IDC_PROPERTIES, instance_);
+    auto* analysis_menu = menuBar()->addMenu("Analysis");
+    analysis_menu->addAction(xrefs_action);
+    analysis_menu->addAction(cfg_action);
+    analysis_menu->addAction(callers_action);
+    analysis_menu->addAction(callees_action);
+    analysis_menu->addSeparator();
+    analysis_menu->addAction(imports_action);
+    analysis_menu->addAction(exports_action);
+    analysis_menu->addAction(hex_action);
 
-    log_ = create_control(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL, 0, 0, 0, 0, window_, IDC_LOG, instance_);
-    status_ = create_control(0, STATUSCLASSNAMEW, L"Static analysis only - no sample execution", WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP, 0, 0, 0, 0, window_, IDC_STATUS, instance_);
+    auto* windows_menu = menuBar()->addMenu("Windows");
+    windows_menu->addAction(functions_dock_->toggleViewAction());
+    windows_menu->addAction(side_dock_->toggleViewAction());
+    windows_menu->addAction(log_dock_->toggleViewAction());
 
-    set_control_font(open_button_, default_font_);
-    set_control_font(back_button_, default_font_);
-    set_control_font(forward_button_, default_font_);
-    set_control_font(xrefs_button_, default_font_);
-    set_control_font(cfg_button_, default_font_);
-    set_control_font(callers_button_, default_font_);
-    set_control_font(callees_button_, default_font_);
-    set_control_font(imports_button_, default_font_);
-    set_control_font(exports_button_, default_font_);
-    set_control_font(hex_button_, default_font_);
-    set_control_font(ai_button_, default_font_);
-    set_control_font(address_label_, default_font_);
-    set_control_font(address_edit_, fixed_font_);
-    set_control_font(go_button_, default_font_);
-    set_control_font(functions_label_, default_font_);
-    set_control_font(function_filter_, default_font_);
-    set_control_font(functions_, fixed_font_);
-    set_control_font(disassembly_, fixed_font_);
-    set_control_font(hex_view_, fixed_font_);
-    set_control_font(structures_view_, fixed_font_);
-    set_control_font(enums_view_, fixed_font_);
-    set_control_font(imports_view_, fixed_font_);
-    set_control_font(exports_view_, fixed_font_);
-    set_control_font(xrefs_, fixed_font_);
-    set_control_font(properties_, fixed_font_);
-    set_control_font(log_, fixed_font_);
+    auto* help_menu = menuBar()->addMenu("Help");
+    help_menu->addAction(ai_action);
 
-    select_main_tab(0);
-    select_side_tab(0);
-    EnableWindow(back_button_, FALSE);
-    EnableWindow(forward_button_, FALSE);
-    set_status(L"Open a PE executable or DLL to begin.");
-    set_log(L"Paper native MSVC GUI ready. Static analysis only - no sample execution.");
-}
+    auto* toolbar = addToolBar("IDA shortcuts");
+    toolbar->setObjectName("IDAQuickToolbar");
+    toolbar->setMovable(false);
+    toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    toolbar->addAction(open_action);
+    toolbar->addAction(back_action_);
+    toolbar->addAction(forward_action_);
+    toolbar->addSeparator();
+    toolbar->addAction(goto_action);
+    toolbar->addAction(entry_action);
+    toolbar->addSeparator();
+    toolbar->addAction(xrefs_action);
+    toolbar->addAction(cfg_action);
+    toolbar->addAction(callers_action);
+    toolbar->addAction(callees_action);
+    toolbar->addAction(imports_action);
+    toolbar->addAction(exports_action);
+    toolbar->addAction(hex_action);
+    toolbar->addAction(ai_action);
 
-void MainWindow::create_accelerators() {
-    const ACCEL table[] = {
-        {FVIRTKEY | FCONTROL, L'O', IDM_OPEN},
-        {FVIRTKEY | FALT, VK_LEFT, IDM_BACK},
-        {FVIRTKEY | FALT, VK_RIGHT, IDM_FORWARD},
-        {FVIRTKEY | FCONTROL, L'G', IDM_GOTO},
-        {FVIRTKEY, VK_HOME, IDM_ENTRY},
-        {FVIRTKEY, L'X', IDM_XREFS},
-        {FVIRTKEY | FCONTROL | FSHIFT, L'F', IDM_CFG},
-        {FVIRTKEY | FCONTROL | FSHIFT, L'U', IDM_CALLERS},
-        {FVIRTKEY | FCONTROL | FSHIFT, L'D', IDM_CALLEES},
-        {FVIRTKEY | FCONTROL, L'I', IDM_IMPORTS},
-        {FVIRTKEY | FCONTROL, L'E', IDM_EXPORTS},
-        {FVIRTKEY | FCONTROL, L'H', IDM_HEX},
-        {FVIRTKEY, VK_F1, IDM_AI}
-    };
-    accelerators_ = CreateAcceleratorTableW(const_cast<ACCEL*>(table), static_cast<int>(std::size(table)));
-}
+    status_ = new QLabel("Open a PE executable or DLL to begin.", this);
+    statusBar()->addWidget(status_, 1);
+    statusBar()->showMessage("Static analysis only — no sample execution");
 
-void MainWindow::layout_controls() {
-    if (!window_) return;
-    RECT client{};
-    GetClientRect(window_, &client);
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    const int toolbar_height = 36;
-    const int status_height = 22;
-    const int log_height = std::clamp(height / 5, 110, 180);
-    const int content_top = toolbar_height;
-    const int content_bottom = height - status_height - log_height;
-    const int content_height = std::max(80, content_bottom - content_top);
-    const int left_width = std::clamp(width / 5, 270, 340);
-    const int right_width = std::clamp(width / 5, 300, 390);
-    const int center_x = left_width;
-    const int center_width = std::max(220, width - left_width - right_width);
-    const int right_x = center_x + center_width;
-
-    const HWND buttons[] = {open_button_, back_button_, forward_button_, xrefs_button_, cfg_button_, callers_button_, callees_button_, imports_button_, exports_button_, hex_button_, ai_button_};
-    const int button_widths[] = {62, 62, 72, 58, 48, 68, 68, 70, 70, 52, 48};
-    int button_x = 4;
-    for (std::size_t index = 0; index < std::size(buttons); ++index) {
-        SetWindowPos(buttons[index], nullptr, button_x, 4, button_widths[index], 28, SWP_NOZORDER);
-        button_x += button_widths[index] + 3;
-    }
-    const int address_label_x = std::min(button_x + 6, std::max(button_x + 6, width - 300));
-    if (address_label_) SetWindowPos(address_label_, nullptr, address_label_x, 4, 60, 28, SWP_NOZORDER);
-    const int address_x = address_label_x + 62;
-    const int go_x = width - 48;
-    SetWindowPos(address_edit_, nullptr, address_x, 5, std::max(80, go_x - address_x - 4), 26, SWP_NOZORDER);
-    SetWindowPos(go_button_, nullptr, go_x, 4, 44, 28, SWP_NOZORDER);
-
-    SetWindowPos(functions_label_, nullptr, 6, content_top + 4, left_width - 12, 20, SWP_NOZORDER);
-    SetWindowPos(function_filter_, nullptr, 4, content_top + 26, left_width - 8, 24, SWP_NOZORDER);
-    SetWindowPos(functions_, nullptr, 4, content_top + 54, left_width - 8, content_height - 58, SWP_NOZORDER);
-    SetWindowPos(main_tabs_, nullptr, center_x + 4, content_top, center_width - 8, content_height, SWP_NOZORDER);
-    SetWindowPos(side_tabs_, nullptr, right_x + 4, content_top, right_width - 8, content_height, SWP_NOZORDER);
-    SetWindowPos(log_, nullptr, 0, content_bottom, width, log_height, SWP_NOZORDER);
-    SetWindowPos(status_, nullptr, 0, height - status_height, width, status_height, SWP_NOZORDER);
-
-    RECT page{};
-    GetClientRect(main_tabs_, &page);
-    TabCtrl_AdjustRect(main_tabs_, FALSE, &page);
-    POINT main_origin{0, 0};
-    MapWindowPoints(main_tabs_, window_, &main_origin, 1);
-    const HWND main_pages[] = {disassembly_, hex_view_, structures_view_, enums_view_, imports_view_, exports_view_};
-    for (HWND page_control : main_pages) {
-        SetWindowPos(page_control, nullptr, main_origin.x + page.left, main_origin.y + page.top, page.right - page.left, page.bottom - page.top, SWP_NOZORDER);
-    }
-
-    RECT side_page{};
-    GetClientRect(side_tabs_, &side_page);
-    TabCtrl_AdjustRect(side_tabs_, FALSE, &side_page);
-    POINT side_origin{0, 0};
-    MapWindowPoints(side_tabs_, window_, &side_origin, 1);
-    SetWindowPos(xrefs_, nullptr, side_origin.x + side_page.left, side_origin.y + side_page.top, side_page.right - side_page.left, side_page.bottom - side_page.top, SWP_NOZORDER);
-    SetWindowPos(properties_, nullptr, side_origin.x + side_page.left, side_origin.y + side_page.top, side_page.right - side_page.left, side_page.bottom - side_page.top, SWP_NOZORDER);
-    SendMessageW(status_, WM_SIZE, 0, 0);
-}
-
-void MainWindow::select_main_tab(int index) {
-    if (!main_tabs_) return;
-    if (index < 0 || index > 5) index = 0;
-    TabCtrl_SetCurSel(main_tabs_, index);
-    const HWND pages[] = {disassembly_, hex_view_, structures_view_, enums_view_, imports_view_, exports_view_};
-    for (int page = 0; page < 6; ++page) ShowWindow(pages[page], page == index ? SW_SHOW : SW_HIDE);
-}
-
-void MainWindow::select_side_tab(int index) {
-    if (!side_tabs_) return;
-    if (index < 0 || index > 1) index = 0;
-    TabCtrl_SetCurSel(side_tabs_, index);
-    ShowWindow(xrefs_, index == 0 ? SW_SHOW : SW_HIDE);
-    ShowWindow(properties_, index == 1 ? SW_SHOW : SW_HIDE);
+    refresh_functions();
 }
 
 void MainWindow::open_file() {
-    std::vector<wchar_t> path(32768, L'\0');
-    OPENFILENAMEW dialog{};
-    dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = window_;
-    dialog.lpstrFilter = L"Executables (*.exe;*.dll;*.sys)\0*.exe;*.dll;*.sys\0All files (*.*)\0*.*\0";
-    dialog.lpstrFile = path.data();
-    dialog.nMaxFile = static_cast<DWORD>(path.size());
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
-    dialog.lpstrTitle = L"Open PE image";
-    if (GetOpenFileNameW(&dialog)) open_path(path.data());
+    const auto path = QFileDialog::getOpenFileName(this, "Open PE image", QString(), "Executables (*.exe *.dll *.sys);;All files (*.*)");
+    if (path.isEmpty()) return;
+    open_path(path);
 }
 
-void MainWindow::open_path(const std::wstring& path) {
+void MainWindow::open_path(const QString& path) {
     std::string error;
-    if (!analyzer_.open_file(wide_to_utf8(path), error)) {
-        const auto message = utf8_to_wide(error);
-        set_status(message);
-        set_log(message);
+    if (!analyzer_.open_file(path.toStdString(), error)) {
+        status_->setText(QString::fromStdString(error));
+        set_log(QString::fromStdString(error));
         return;
     }
-
     navigation_history_.clear();
     navigation_index_ = 0;
     current_address_ = 0;
     const auto info = analyzer_.module_info();
     const auto stats = analyzer_.analysis_stats();
-    const auto function_count = number_or(stats, "function_count");
-    const auto instruction_count = number_or(stats, "instruction_count");
-    const auto xref_count = number_or(stats, "xref_count");
-    std::wostringstream status;
-    status << L"Indexed " << function_count << L" functions, " << instruction_count << L" instructions";
-    set_status(status.str());
+    const auto* functions = stats.find("function_count");
+    const auto* instructions = stats.find("instruction_count");
+    const auto function_count = functions ? functions->as_u64() : 0;
+    const auto instruction_count = instructions ? instructions->as_u64() : 0;
+    status_->setText(QString("Indexed %1 functions, %2 instructions").arg(static_cast<qulonglong>(function_count)).arg(static_cast<qulonglong>(instruction_count)));
     populate_properties(info);
     refresh_functions();
-    std::wostringstream log;
-    log << L"Loaded " << path << L"\r\n" << function_count << L" functions, " << instruction_count << L" instructions, " << xref_count << L" xrefs";
-    set_log(log.str());
-    const auto count = static_cast<int>(SendMessageW(functions_, LB_GETCOUNT, 0, 0));
-    if (count > 0) {
-        SendMessageW(functions_, LB_SETCURSEL, 0, 0);
-        show_selected_function();
-    }
+    set_log(QString("Loaded %1\n%2 functions, %3 instructions, %4 xrefs")
+                .arg(path)
+                .arg(static_cast<qulonglong>(function_count))
+                .arg(static_cast<qulonglong>(instruction_count))
+                .arg(static_cast<qulonglong>(stats.find("xref_count") ? stats.find("xref_count")->as_u64() : 0)));
+    if (functions_ && functions_->count() > 0) functions_->setCurrentRow(0);
 }
 
 void MainWindow::refresh_functions() {
-    std::vector<wchar_t> buffer(2048, L'\0');
-    const int length = GetWindowTextW(function_filter_, buffer.data(), static_cast<int>(buffer.size()));
-    const std::wstring filter(buffer.data(), static_cast<std::size_t>(std::max(0, length)));
-    Json arguments = Json::object();
-    if (!filter.empty()) arguments["query"] = wide_to_utf8(filter);
-    arguments["limit"] = 10000;
-    const auto list = analyzer_.list_functions(arguments);
-    SendMessageW(functions_, LB_RESETCONTENT, 0, 0);
-    int selected = -1;
+    functions_->setUpdatesEnabled(false);
+    functions_->clear();
+    Json args = Json::object();
+    const auto query = function_filter_ ? function_filter_->text().trimmed() : QString();
+    if (!query.isEmpty()) args["query"] = query.toStdString();
+    args["limit"] = 10'000;
+    const auto list = analyzer_.list_functions(args);
+    int row_to_select = -1;
     int row = 0;
     for (const auto& item : list.array_items()) {
         const auto address = json_string(item, "address");
         const auto name = json_string(item, "name");
-        if (address.empty() || name.empty()) continue;
-        const auto parsed = parse_address(address).value_or(0);
-        const auto text = name + L"  " + address;
-        const auto index = static_cast<int>(SendMessageW(functions_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str())));
-        SendMessageW(functions_, LB_SETITEMDATA, static_cast<WPARAM>(index), static_cast<LPARAM>(parsed));
-        if (parsed == current_address_) selected = row;
+        if (address.isEmpty() || name.isEmpty()) continue;
+        auto* function_item = new QListWidgetItem(name + "  " + address, functions_);
+        function_item->setData(Qt::UserRole, address);
+        function_item->setToolTip(name + "\n" + address);
+        if (item.find("exported") && item.find("exported")->as_bool()) function_item->setForeground(QColor("#185a9d"));
+        if (parse_address(address).value_or(0) == current_address_) row_to_select = row;
         ++row;
     }
-    if (selected >= 0) SendMessageW(functions_, LB_SETCURSEL, selected, 0);
+    functions_->setUpdatesEnabled(true);
+    if (row_to_select >= 0) functions_->setCurrentRow(row_to_select);
 }
 
-void MainWindow::filter_functions() { refresh_functions(); }
+void MainWindow::filter_functions(const QString&) { refresh_functions(); }
 
 void MainWindow::show_selected_function() {
-    const auto index = static_cast<int>(SendMessageW(functions_, LB_GETCURSEL, 0, 0));
-    if (index < 0) return;
-    const auto address = static_cast<Address>(SendMessageW(functions_, LB_GETITEMDATA, static_cast<WPARAM>(index), 0));
+    const auto selected = functions_->selectedItems();
+    if (selected.isEmpty()) return;
+    const auto address = item_address(selected.front());
     if (!address) return;
-    navigate_to(address);
-    Json arguments = Json::object();
-    arguments["address"] = wide_to_utf8(address_text(address));
-    populate_properties(analyzer_.get_function(arguments));
+    navigate_to(*address);
+    Json args = Json::object();
+    args["address"] = address_text(*address).toStdString();
+    populate_properties(analyzer_.get_function(args));
 }
 
 void MainWindow::navigate_to(Address address, bool add_history) {
-    if (!address) return;
+    if (address == 0) return;
     if (add_history) {
         if (navigation_history_.empty()) {
             navigation_history_.push_back(address);
@@ -548,136 +380,129 @@ void MainWindow::navigate_to(Address address, bool add_history) {
         }
     }
     current_address_ = address;
-    SetWindowTextW(address_edit_, address_text(address).c_str());
     populate_disassembly(address);
     populate_xrefs(address);
-    EnableWindow(back_button_, !navigation_history_.empty() && navigation_index_ > 0);
-    EnableWindow(forward_button_, !navigation_history_.empty() && navigation_index_ + 1 < navigation_history_.size());
+    back_action_->setEnabled(!navigation_history_.empty() && navigation_index_ > 0);
+    forward_action_->setEnabled(!navigation_history_.empty() && navigation_index_ + 1 < navigation_history_.size());
 }
 
 void MainWindow::populate_disassembly(Address address) {
-    Json arguments = Json::object();
-    arguments["address"] = wide_to_utf8(address_text(address));
-    arguments["count"] = 256;
-    const auto instructions = analyzer_.disassemble(arguments);
-    ListView_DeleteAllItems(disassembly_);
-    disassembly_addresses_.clear();
-    disassembly_kinds_.clear();
+    Json args = Json::object();
+    args["address"] = address_text(address).toStdString();
+    args["count"] = 256;
+    const auto instructions = analyzer_.disassemble(args);
+    disassembly_->setUpdatesEnabled(false);
+    disassembly_->clearContents();
+    disassembly_->setRowCount(static_cast<int>(instructions.array_items().size()));
     int row = 0;
     for (const auto& instruction : instructions.array_items()) {
         const auto address_value = json_string(instruction, "address");
         const auto bytes = json_string(instruction, "bytes");
         const auto mnemonic = json_string(instruction, "mnemonic");
         const auto operands = json_string(instruction, "operands");
-        const auto kind = instruction_kind(instruction);
-        std::wstring comment;
-        const auto* target = instruction.find("target");
-        if (target && target->is_string()) comment = L"-> " + utf8_to_wide(target->as_string());
-        else if (kind == L"return") comment = L"function return";
-        else if (kind == L"indirect_call" || kind == L"indirect_jump") comment = L"indirect control flow";
-        std::array<std::wstring, 5> values{address_value, bytes, mnemonic, operands, comment};
-        LVITEMW item{};
-        item.mask = LVIF_TEXT;
-        item.iItem = row;
-        item.pszText = values[0].data();
-        const auto inserted = ListView_InsertItem(disassembly_, &item);
-        for (int column = 1; column < 5; ++column) ListView_SetItemText(disassembly_, inserted, column, values[static_cast<std::size_t>(column)].data());
-        disassembly_addresses_.push_back(parse_address(address_value).value_or(0));
-        disassembly_kinds_.push_back(kind);
+        const auto kind = json_kind(instruction);
+        QString comment;
+        if (const auto target = instruction.find("target"); target && target->is_string()) comment = QStringLiteral("→ ") + QString::fromStdString(target->as_string());
+        else if (kind == QStringLiteral("return")) comment = QStringLiteral("function return");
+        else if (kind == QStringLiteral("indirect_call") || kind == QStringLiteral("indirect_jump")) comment = QStringLiteral("indirect control flow");
+
+        const QStringList values{address_value, bytes, mnemonic, operands, comment};
+        for (int column = 0; column < values.size(); ++column) {
+            auto* cell = new QTableWidgetItem(values[column]);
+            cell->setData(Qt::UserRole, address_value);
+            disassembly_->setItem(row, column, cell);
+        }
+        QColor color("#274e8b");
+        if (kind == QStringLiteral("call") || kind == QStringLiteral("indirect_call")) color = QColor("#8a3b12");
+        else if (kind == QStringLiteral("jump") || kind == QStringLiteral("conditional_jump")) color = QColor("#6b3f95");
+        else if (kind == QStringLiteral("return")) color = QColor("#8b1a1a");
+        for (int column = 2; column <= 3; ++column) disassembly_->item(row, column)->setForeground(color);
         ++row;
     }
-    if (row > 0) {
-        ListView_SetItemState(disassembly_, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(disassembly_, 0, FALSE);
+    disassembly_->setUpdatesEnabled(true);
+    if (disassembly_->rowCount() > 0) {
+        disassembly_->setCurrentCell(0, 0);
+        disassembly_->scrollToItem(disassembly_->item(0, 0), QAbstractItemView::PositionAtTop);
     }
-    select_main_tab(0);
+    views_->setCurrentIndex(0);
 }
 
 void MainWindow::populate_hex(Address address) {
-    Json arguments = Json::object();
-    arguments["address"] = wide_to_utf8(address_text(address));
-    arguments["count"] = 256;
-    const auto bytes = analyzer_.read_bytes(arguments);
+    Json args = Json::object();
+    args["address"] = address_text(address).toStdString();
+    args["count"] = 256;
+    const auto bytes = analyzer_.read_bytes(args);
     const auto* encoded = bytes.find("bytes");
     if (!encoded || !encoded->is_string()) {
-        SetWindowTextW(hex_view_, L"");
-        select_main_tab(1);
+        hex_view_->clear();
         return;
     }
     const auto base = parse_address(json_string(bytes, "address")).value_or(address);
-    const auto& hex = encoded->as_string();
-    std::wostringstream output;
-    for (std::size_t offset = 0; offset < hex.size(); offset += 32) {
-        const auto byte_count = std::min<std::size_t>(16, (hex.size() - offset) / 2);
-        output << address_text(base + static_cast<Address>(offset / 2)) << L"  ";
-        std::wstring ascii;
-        for (std::size_t index = 0; index < 16; ++index) {
+    const QString hex = QString::fromStdString(encoded->as_string());
+    QString output;
+    for (qsizetype offset = 0; offset < hex.size(); offset += 32) {
+        const int byte_count = std::min(16, static_cast<int>((hex.size() - offset) / 2));
+        output += address_text(base + static_cast<Address>(offset / 2)) + "  ";
+        QString ascii;
+        for (int index = 0; index < 16; ++index) {
             if (index < byte_count) {
-                unsigned value = 0;
-                try { value = static_cast<unsigned>(std::stoul(hex.substr(offset + index * 2, 2), nullptr, 16)); } catch (...) { value = 0; }
-                output << std::hex << std::setw(2) << std::setfill(L'0') << value << L" ";
-                ascii.push_back(value >= 0x20 && value <= 0x7e ? static_cast<wchar_t>(value) : L'.');
+                const auto token = hex.mid(offset + index * 2, 2);
+                bool ok = false;
+                const auto value = token.toUInt(&ok, 16);
+                output += ok ? QString("%1 ").arg(value, 2, 16, QLatin1Char('0')) : QStringLiteral("?? ");
+                ascii += ok && value >= 0x20 && value <= 0x7e ? QChar(static_cast<ushort>(value)) : QChar('.');
             } else {
-                output << L"   ";
-                ascii.push_back(L' ');
+                output += QStringLiteral("   ");
+                ascii += QChar(' ');
             }
-            if (index == 7) output << L' ';
+            if (index == 7) output += QChar(' ');
         }
-        output << L" |" << ascii << L"|\r\n";
+        output += " |" + ascii + "|\n";
     }
-    SetWindowTextW(hex_view_, output.str().c_str());
-    select_main_tab(1);
+    hex_view_->setPlainText(output);
+    views_->setCurrentWidget(hex_view_);
 }
 
 void MainWindow::populate_xrefs(Address address) {
-    SendMessageW(xrefs_, LB_RESETCONTENT, 0, 0);
-    xref_targets_.clear();
-    Json arguments = Json::object();
-    arguments["address"] = wide_to_utf8(address_text(address));
-    const auto incoming = analyzer_.xrefs_to(arguments);
-    const auto outgoing = analyzer_.xrefs_from(arguments);
-    auto add_reference = [&](const Json& reference, bool incoming_reference) {
+    xrefs_->clear();
+    Json args = Json::object();
+    args["address"] = address_text(address).toStdString();
+    const auto incoming = analyzer_.xrefs_to(args);
+    const auto outgoing = analyzer_.xrefs_from(args);
+    for (const auto& reference : incoming.array_items()) {
         const auto from = json_string(reference, "from");
+        const auto kind = json_string(reference, "kind");
+        const auto symbol = json_string(reference, "symbol");
+        auto* item = new QListWidgetItem(QStringLiteral("← ") + pretty_address(from) + "  " + kind + (symbol.isEmpty() ? QString() : "  " + symbol), xrefs_);
+        item->setData(Qt::UserRole, from);
+        item->setToolTip(item->text());
+    }
+    for (const auto& reference : outgoing.array_items()) {
         const auto to = json_string(reference, "to");
         const auto kind = json_string(reference, "kind");
         const auto symbol = json_string(reference, "symbol");
-        const auto target_text = incoming_reference ? from : to;
-        const auto target = parse_address(target_text).value_or(0);
-        std::wstring line = incoming_reference ? L"<- " : L"-> ";
-        line += target_text + L"  " + kind;
-        if (!symbol.empty()) line += L"  " + symbol;
-        const auto row = static_cast<int>(SendMessageW(xrefs_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str())));
-        SendMessageW(xrefs_, LB_SETITEMDATA, static_cast<WPARAM>(row), static_cast<LPARAM>(target));
-        xref_targets_.push_back(target);
-    };
-    for (const auto& reference : incoming.array_items()) add_reference(reference, true);
-    for (const auto& reference : outgoing.array_items()) add_reference(reference, false);
-    if (SendMessageW(xrefs_, LB_GETCOUNT, 0, 0) == 0) SendMessageW(xrefs_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"No indexed xrefs at this address"));
+        auto* item = new QListWidgetItem(QStringLiteral("→ ") + pretty_address(to) + "  " + kind + (symbol.isEmpty() ? QString() : "  " + symbol), xrefs_);
+        item->setData(Qt::UserRole, to);
+        item->setToolTip(item->text());
+    }
+    if (xrefs_->count() == 0) xrefs_->addItem("No indexed xrefs at this address");
 }
 
-void MainWindow::populate_properties(const Json& value) {
-    SetWindowTextW(properties_, utf8_to_wide(value.dump()).c_str());
-    select_side_tab(1);
-}
+void MainWindow::populate_properties(const Json& value) { properties_->setPlainText(QString::fromStdString(value.dump())); }
 
-void MainWindow::set_log(const std::wstring& message) {
-    const auto length = GetWindowTextLengthW(log_);
-    SendMessageW(log_, EM_SETSEL, static_cast<WPARAM>(length), static_cast<LPARAM>(length));
-    const std::wstring line = message + L"\r\n";
-    SendMessageW(log_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(line.c_str()));
-}
-
-void MainWindow::set_status(const std::wstring& message) {
-    if (status_) SendMessageW(status_, SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(message.c_str()));
+void MainWindow::set_log(const QString& message) {
+    log_->appendPlainText(message);
+    log_->ensureCursorVisible();
 }
 
 void MainWindow::jump_to_address() {
-    std::vector<wchar_t> buffer(128, L'\0');
-    const auto length = GetWindowTextW(address_edit_, buffer.data(), static_cast<int>(buffer.size()));
-    const std::wstring text(buffer.data(), static_cast<std::size_t>(std::max(0, length)));
+    bool accepted = false;
+    const auto initial = current_address_ ? address_text(current_address_) : QStringLiteral("0x");
+    const auto text = QInputDialog::getText(this, "Go to address", "Address (hex):", QLineEdit::Normal, initial, &accepted);
+    if (!accepted) return;
     const auto address = parse_address(text);
     if (!address) {
-        set_log(L"Invalid address: " + text);
+        set_log("Invalid address: " + text);
         return;
     }
     navigate_to(*address);
@@ -703,139 +528,100 @@ void MainWindow::go_forward() {
 
 void MainWindow::show_xrefs() {
     populate_xrefs(current_address_);
-    select_side_tab(0);
+    side_dock_->show();
+    side_dock_->raise();
 }
 
 void MainWindow::show_cfg() {
-    Json arguments = Json::object();
-    arguments["function_address"] = wide_to_utf8(address_text(current_address_));
-    populate_properties(analyzer_.cfg(arguments));
-    set_log(L"CFG refreshed for " + address_text(current_address_));
+    Json args = Json::object();
+    args["function_address"] = address_text(current_address_).toStdString();
+    const auto cfg = analyzer_.cfg(args);
+    populate_properties(cfg);
+    side_dock_->show();
+    side_dock_->raise();
+    set_log("CFG refreshed for " + address_text(current_address_));
 }
 
 void MainWindow::show_callers() {
-    Json arguments = Json::object();
-    arguments["function_address"] = wide_to_utf8(address_text(current_address_));
-    arguments["direction"] = "callers";
-    arguments["depth"] = 2;
-    populate_properties(analyzer_.call_graph(arguments));
+    Json args = Json::object();
+    args["function_address"] = address_text(current_address_).toStdString();
+    args["direction"] = "callers";
+    args["depth"] = 2;
+    populate_properties(analyzer_.call_graph(args));
+    side_dock_->show();
+    side_dock_->raise();
 }
 
 void MainWindow::show_callees() {
-    Json arguments = Json::object();
-    arguments["function_address"] = wide_to_utf8(address_text(current_address_));
-    arguments["direction"] = "callees";
-    arguments["depth"] = 2;
-    populate_properties(analyzer_.call_graph(arguments));
+    Json args = Json::object();
+    args["function_address"] = address_text(current_address_).toStdString();
+    args["direction"] = "callees";
+    args["depth"] = 2;
+    populate_properties(analyzer_.call_graph(args));
+    side_dock_->show();
+    side_dock_->raise();
 }
 
 void MainWindow::show_imports() {
     const auto imports = analyzer_.list_imports(Json::object());
-    std::wstring text;
-    for (const auto& item : imports.array_items()) {
-        text += json_string(item, "thunk") + L"  " + json_string(item, "library") + L"!" + json_string(item, "name") + L"\r\n";
-    }
-    if (text.empty()) text = L"No imports indexed.";
-    SetWindowTextW(imports_view_, text.c_str());
-    select_main_tab(4);
+    QString text;
+    for (const auto& item : imports.array_items()) text += json_string(item, "thunk") + "  " + json_string(item, "library") + "!" + json_string(item, "name") + "\n";
+    imports_view_->setPlainText(text.isEmpty() ? QStringLiteral("No imports indexed.") : text);
+    views_->setCurrentWidget(imports_view_);
 }
 
 void MainWindow::show_exports() {
     const auto exports = analyzer_.list_exports(Json::object());
-    std::wstring text;
-    for (const auto& item : exports.array_items()) text += json_string(item, "address") + L"  " + json_string(item, "name") + L"\r\n";
-    if (text.empty()) text = L"No exports indexed.";
-    SetWindowTextW(exports_view_, text.c_str());
-    select_main_tab(5);
+    QString text;
+    for (const auto& item : exports.array_items()) text += json_string(item, "address") + "  " + json_string(item, "name") + "\n";
+    exports_view_->setPlainText(text.isEmpty() ? QStringLiteral("No exports indexed.") : text);
+    views_->setCurrentWidget(exports_view_);
 }
 
 void MainWindow::show_hex_view() { populate_hex(current_address_); }
 
 void MainWindow::show_ai_help() {
-    wchar_t module_path[32768]{};
-    GetModuleFileNameW(nullptr, module_path, static_cast<DWORD>(std::size(module_path)));
-    std::wstring executable(module_path);
-    const auto slash = executable.find_last_of(L"\\/");
-    if (slash != std::wstring::npos) executable.resize(slash + 1);
-    executable += L"paper_ai.exe";
-    std::wstring text = L"AI / MCP quick setup\r\n\r\nBuild the optional paper_ai target with PAPER_BUILD_AI=ON, then register this executable as a local stdio server:\r\n\r\n{\r\n  \"mcpServers\": {\r\n    \"paper\": {\r\n      \"command\": \"" + executable + L"\",\r\n      \"args\": []\r\n    }\r\n  }\r\n}\r\n\r\nRecommended calls:\r\nopen_binary -> module_info -> list_functions -> disassemble -> xrefs_to / xrefs_from -> cfg -> call_graph\r\n\r\nThe AI server is static-only and shares the same indexed evidence as this GUI.";
-    SetWindowTextW(properties_, text.c_str());
-    select_side_tab(1);
+    const auto executable = QCoreApplication::applicationDirPath() + "/paper_ai.exe";
+    properties_->setPlainText(
+        "AI / MCP quick setup\n\n"
+        "Register this executable as a local stdio server:\n\n"
+        "{\n  \"mcpServers\": {\n    \"paper\": {\n      \"command\": \"" + executable +
+        "\",\n      \"args\": []\n    }\n  }\n}\n\n"
+        "Recommended first calls:\n"
+        "open_binary → module_info → list_functions → disassemble → xrefs_to / xrefs_from → cfg → call_graph\n\n"
+        "The AI server is static-only and shares the same indexed evidence as this GUI.");
+    side_dock_->show();
+    side_dock_->raise();
 }
 
-void MainWindow::jump_to_xref() {
-    const auto index = static_cast<int>(SendMessageW(xrefs_, LB_GETCURSEL, 0, 0));
-    if (index < 0) return;
-    const auto target = static_cast<Address>(SendMessageW(xrefs_, LB_GETITEMDATA, static_cast<WPARAM>(index), 0));
-    if (target) navigate_to(target);
+void MainWindow::jump_to_xref(QListWidgetItem* item) {
+    if (!item) return;
+    const auto address = parse_address(item->data(Qt::UserRole).toString());
+    if (address) navigate_to(*address);
 }
 
-void MainWindow::show_selected_disassembly_row(int row) {
-    if (row < 0 || static_cast<std::size_t>(row) >= disassembly_addresses_.size()) return;
-    current_address_ = disassembly_addresses_[static_cast<std::size_t>(row)];
-    populate_xrefs(current_address_);
+void MainWindow::show_selected_disassembly_row(int row, int) {
+    if (row < 0 || row >= disassembly_->rowCount() || !disassembly_->item(row, 0)) return;
+    const auto address = parse_address(disassembly_->item(row, 0)->data(Qt::UserRole).toString());
+    if (!address) return;
+    current_address_ = *address;
+    populate_xrefs(*address);
 }
 
-std::wstring MainWindow::utf8_to_wide(std::string_view text) {
-    if (text.empty()) return {};
-    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (length <= 0) return {};
-    std::wstring result(static_cast<std::size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(), length);
-    return result;
+std::optional<Address> MainWindow::item_address(const QListWidgetItem* item) const {
+    return item ? parse_address(item->data(Qt::UserRole).toString()) : std::nullopt;
 }
 
-std::string MainWindow::wide_to_utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    if (length <= 0) return {};
-    std::string result(static_cast<std::size_t>(length), '\0');
-    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(), length, nullptr, nullptr);
-    return result;
+std::optional<Address> MainWindow::parse_address(const QString& text) {
+    const auto value = text.trimmed();
+    if (value.isEmpty()) return std::nullopt;
+    bool ok = false;
+    const int base = value.startsWith("0x", Qt::CaseInsensitive) ? 0 : 16;
+    const auto address = value.toULongLong(&ok, base);
+    return ok ? std::optional<Address>(static_cast<Address>(address)) : std::nullopt;
 }
 
-std::wstring MainWindow::json_string(const Json& item, std::string_view key) {
-    const auto* value = item.find(key);
-    return value && value->is_string() ? utf8_to_wide(value->as_string()) : std::wstring{};
-}
-
-std::wstring MainWindow::address_text(Address address) {
-    std::wostringstream text;
-    text << L"0x" << std::hex << std::nouppercase << address;
-    return text.str();
-}
-
-std::optional<Address> MainWindow::parse_address(std::wstring_view text) {
-    std::size_t first = 0;
-    while (first < text.size() && std::iswspace(text[first])) ++first;
-    std::size_t last = text.size();
-    while (last > first && std::iswspace(text[last - 1])) --last;
-    if (first == last) return std::nullopt;
-    std::wstring value(text.substr(first, last - first));
-    if (value.size() >= 2 && value[0] == L'0' && (value[1] == L'x' || value[1] == L'X')) value.erase(0, 2);
-    if (value.empty()) return std::nullopt;
-    try {
-        std::size_t consumed = 0;
-        const auto address = std::stoull(value, &consumed, 16);
-        return consumed == value.size() ? std::optional<Address>(static_cast<Address>(address)) : std::nullopt;
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-std::wstring MainWindow::instruction_kind(const Json& item) {
-    return json_string(item, "kind");
-}
-
-HWND MainWindow::create_control(DWORD ex_style, LPCWSTR class_name, LPCWSTR title, DWORD style,
-                                int x, int y, int width, int height, HWND parent, int id,
-                                HINSTANCE instance) {
-    return CreateWindowExW(ex_style, class_name, title, style, x, y, width, height, parent,
-                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
-}
-
-void MainWindow::set_control_font(HWND control, HFONT font) {
-    if (control && font) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-}
+QString MainWindow::address_text(Address address) { return QStringLiteral("0x") + QString::number(address, 16); }
 
 } // namespace paper
+

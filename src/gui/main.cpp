@@ -1,25 +1,16 @@
-#define UNICODE
-#define _UNICODE
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
 #include "paper/gui/main_window.hpp"
 
-#include <shellapi.h>
+#include <QApplication>
 
-int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int command) {
+int main(int argc, char** argv) {
+    QApplication application(argc, argv);
+    application.setApplicationName("Paper");
+    application.setApplicationVersion("0.2.0");
+    application.setOrganizationName("Paper");
     paper::MainWindow window;
-    if (!window.create(instance)) return 1;
-
-    int argument_count = 0;
-    LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
-    if (arguments && argument_count > 1) window.open_path(arguments[1]);
-    if (arguments) LocalFree(arguments);
-
-    window.show(command);
-    return window.run();
+    if (argc > 1) window.open_path(QString::fromLocal8Bit(argv[1]));
+    window.show();
+    return application.exec();
 }
+
+
