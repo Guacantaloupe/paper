@@ -32,6 +32,6 @@ Paper v0.2 的桌面窗口按经典 IDA 工作方式组织：左侧是 Functions
 | `Ctrl+H` | Hex view |
 | `F1` | AI / MCP 使用方法 |
 
-双击右侧 Xrefs 项会直接跳到引用指令或目标地址；点击中央反汇编行会同步刷新右侧 Xrefs。左侧 Functions 搜索框可以按名称过滤函数。
+点击右侧 Xrefs 项会直接跳到引用指令或目标地址；点击中央反汇编行会同步刷新右侧 Xrefs。左侧 Functions 搜索框可以按名称过滤函数。窗口支持 Dear ImGui Docking，可拖动四个面板调整为自己的 IDA 工作区。
 
 GUI 只调用 `paper_core` 的静态索引，不执行样本；AI 通过 `paper_ai.exe` 复用同一份证据。
