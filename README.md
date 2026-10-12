@@ -9,15 +9,15 @@ The analysis engine does not run a program, perform symbolic execution, call SMT
 
 ## Build
 
-The project uses C++20. On Windows, open the folder with Visual Studio 2022 or configure it with CMake. The `paper` desktop target uses Qt 6 Widgets and builds with MSVC. The optional `paper_ai` target has no GUI dependency, but is disabled by default when the goal is to build only the desktop application.
+The project uses C++20. On Windows, open the folder with Visual Studio 2022 or configure it with CMake. The `paper` desktop target uses Dear ImGui with the DirectX 11 backend and builds with MSVC; Qt is not required. CMake fetches the pinned ImGui source automatically when no copy exists in `third_party/imgui`. The optional `paper_ai` target has no GUI dependency, but is disabled by default when the goal is to build only the desktop application.
 
 The desktop target is intended to start by double-clicking `paper.exe`. The AI target is intended to be registered as a local stdio tool by the AI client.
 
-The desktop window follows the classic IDA workflow: Functions navigator on the left, IDA View-A disassembly in the center, Xrefs/Properties on the right, and Output at the bottom. The shortcut map is in [`docs/GUI_SHORTCUTS_ZH.md`](docs/GUI_SHORTCUTS_ZH.md).
+The desktop window follows the classic IDA workflow: Functions navigator on the left, IDA View-A disassembly in the center, Xrefs/Properties on the right, and Output at the bottom. The Dear ImGui docking layout is styled as a dark reverse-engineering workbench. The shortcut map is in [`docs/GUI_SHORTCUTS_ZH.md`](docs/GUI_SHORTCUTS_ZH.md).
 
 For broader x86-64 decoding, configure with an installed Zydis CMake package and set `PAPER_WITH_ZYDIS=ON`. The built-in decoder remains available as a dependency-free fallback, so the project still builds when Zydis is not installed.
 
-The default desktop-only configuration is `PAPER_BUILD_GUI=ON`, `PAPER_BUILD_AI=OFF`, and `PAPER_BUILD_TESTS=OFF`. For a project-local setup, place the Qt MSVC installation at `third_party/qt/msvc2022_64`; CMake detects that path automatically. Otherwise set the `PAPER_QT_ROOT` cache variable to a system installation, for example `C:\Qt\6.8.3\msvc2022_64` (or set `CMAKE_PREFIX_PATH` to the same directory). The GUI configure step now stops with a direct error when Qt is missing instead of silently omitting `paper.exe`. Set `PAPER_BUILD_AI=ON` or `PAPER_BUILD_TESTS=ON` only when those extra targets are needed.
+The default desktop-only configuration is `PAPER_BUILD_GUI=ON`, `PAPER_BUILD_AI=OFF`, and `PAPER_BUILD_TESTS=OFF`. The only desktop dependency is the Windows SDK's DirectX 11 libraries. If the machine has network access, CMake automatically fetches Dear ImGui; a local copy may be placed in `third_party/imgui` and automatic fetching can be disabled with `PAPER_FETCH_IMGUI=OFF`. Set `PAPER_BUILD_AI=ON` or `PAPER_BUILD_TESTS=ON` only when those extra targets are needed.
 
 ```text
 PAPER_WITH_ZYDIS=ON
