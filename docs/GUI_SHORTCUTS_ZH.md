@@ -1,0 +1,37 @@
+# Paper GUI：IDA 风格布局与快捷操作
+
+Paper v0.2 的桌面窗口按经典 IDA 工作方式组织：左侧是 Functions 导航，中间是 IDA View-A 反汇编，顶部有颜色图例和视图标签，右侧是 Xrefs/Properties，底部是 Output。`Hex View-1`、`Structures`、`Enums`、`Imports`、`Exports` 作为可切换标签保留，后续可以继续接入类型编辑和图形视图。
+
+## 顶部快捷按钮
+
+| 按钮 | 作用 |
+|---|---|
+| Open | 打开 EXE、DLL 或 SYS |
+| Back / Forward | 在已访问的地址之间导航 |
+| Go to address | 跳转到十六进制地址 |
+| Entry point | 回到 PE 入口点 |
+| Xrefs | 查看当前地址的入向/出向交叉引用 |
+| CFG | 查看当前函数的基本块和前后继 |
+| Callers / Callees | 查看两层调用者或被调用者 |
+| Imports / Exports | 切换导入表或导出表 |
+| Hex view | 查看当前地址附近的十六进制和 ASCII |
+| AI / MCP | 显示 `paper_ai.exe` 的本地 MCP 配置和推荐调用顺序 |
+
+## 键盘快捷键
+
+| 快捷键 | 操作 |
+|---|---|
+| `Ctrl+O` | 打开文件 |
+| `Alt+Left` / `Alt+Right` | 后退/前进 |
+| `Ctrl+G` | 跳转地址 |
+| `Home` | 入口点 |
+| `X` | Xrefs |
+| `Ctrl+Shift+F` | CFG |
+| `Ctrl+Shift+U` / `Ctrl+Shift+D` | Callers / Callees |
+| `Ctrl+I` / `Ctrl+E` | Imports / Exports |
+| `Ctrl+H` | Hex view |
+| `F1` | AI / MCP 使用方法 |
+
+双击右侧 Xrefs 项会直接跳到引用指令或目标地址；点击中央反汇编行会同步刷新右侧 Xrefs。左侧 Functions 搜索框可以按名称过滤函数。
+
+GUI 只调用 `paper_core` 的静态索引，不执行样本；AI 通过 `paper_ai.exe` 复用同一份证据。
