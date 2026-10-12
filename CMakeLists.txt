@@ -52,8 +52,14 @@ if(PAPER_BUILD_GUI)
     # Visual Studio's CMake integration does not automatically know where the
     # Qt MSVC package is installed.  Expose a project-local cache variable so
     # the GUI can be configured without editing the toolchain or source tree.
-    set(PAPER_QT_ROOT "" CACHE PATH
-        "Qt 6 MSVC installation directory (for example C:/Qt/6.8.3/msvc2022_64)")
+    set(_paper_project_qt_root "${CMAKE_SOURCE_DIR}/third_party/qt/msvc2022_64")
+    if(EXISTS "${_paper_project_qt_root}/lib/cmake/Qt6/Qt6Config.cmake")
+        set(_paper_qt_root_default "${_paper_project_qt_root}")
+    else()
+        set(_paper_qt_root_default "")
+    endif()
+    set(PAPER_QT_ROOT "${_paper_qt_root_default}" CACHE PATH
+        "Qt 6 MSVC installation directory (project-local or system path)")
     if(PAPER_QT_ROOT)
         list(PREPEND CMAKE_PREFIX_PATH "${PAPER_QT_ROOT}")
     endif()
