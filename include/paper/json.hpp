@@ -147,6 +147,44 @@ private:
         }
         void fail(const char* message) const { throw std::runtime_error(message); }
 
+        static unsigned hex_digit(char c) {
+            if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+            if (c >= 'a' && c <= 'f') return static_cast<unsigned>(c - 'a' + 10);
+            if (c >= 'A' && c <= 'F') return static_cast<unsigned>(c - 'A' + 10);
+            return 16;
+        }
+
+        std::uint32_t unicode_escape() {
+            std::uint32_t value = 0;
+            for (int index = 0; index < 4; ++index) {
+                if (at_end()) fail("invalid unicode escape");
+                const unsigned digit = hex_digit(take());
+                if (digit >= 16) fail("invalid unicode escape");
+                value = (value << 4) | digit;
+            }
+            return value;
+        }
+
+        static void append_utf8(std::string& out, std::uint32_t codepoint) {
+            if (codepoint <= 0x7F) {
+                out.push_back(static_cast<char>(codepoint));
+            } else if (codepoint <= 0x7FF) {
+                out.push_back(static_cast<char>(0xC0 | (codepoint >> 6)));
+                out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+            } else if (codepoint <= 0xFFFF) {
+                out.push_back(static_cast<char>(0xE0 | (codepoint >> 12)));
+                out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+            } else if (codepoint <= 0x10FFFF) {
+                out.push_back(static_cast<char>(0xF0 | (codepoint >> 18)));
+                out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+            } else {
+                throw std::runtime_error("invalid unicode code point");
+            }
+        }
+
         void literal(std::string_view word) {
             if (input_.substr(pos_, word.size()) != word) fail("invalid JSON literal");
             pos_ += word.size();
@@ -173,15 +211,22 @@ private:
                 case 'r': result.push_back('\r'); break;
                 case 't': result.push_back('\t'); break;
                 case 'u':
-                    // Tool requests are UTF-8 in practice. Preserve a unicode
-                    // escape as a replacement marker instead of accepting bad
-                    // bytes silently.
-                    for (int i = 0; i < 4; ++i) {
-                        if (at_end() || !std::isxdigit(static_cast<unsigned char>(peek())))
-                            fail("invalid unicode escape");
-                        ++pos_;
+                    {
+                        std::uint32_t codepoint = unicode_escape();
+                        // JSON represents non-BMP characters as a UTF-16
+                        // surrogate pair. Decode the pair into real UTF-8 so
+                        // MCP names, comments, and paths survive a round trip.
+                        if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
+                            if (input_.substr(pos_, 2) != "\\u") fail("missing unicode low surrogate");
+                            pos_ += 2;
+                            const std::uint32_t low = unicode_escape();
+                            if (low < 0xDC00 || low > 0xDFFF) fail("invalid unicode low surrogate");
+                            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
+                        } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
+                            fail("unexpected unicode low surrogate");
+                        }
+                        append_utf8(result, codepoint);
                     }
-                    result.push_back('?');
                     break;
                 default: fail("invalid JSON escape");
                 }
