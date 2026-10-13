@@ -13,6 +13,7 @@ out/
 *.dll
 *.so
 *.dylib
+*.paper.json
 
 # Dear ImGui may be supplied as a local checkout; CMake can also fetch it.
 third_party/imgui/
