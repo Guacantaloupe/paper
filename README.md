@@ -2,7 +2,7 @@
 
 Paper is a fast, local, IDA-style static analysis workbench. The v0.2 core is deliberately split into two parts:
 
-- `paper_core`: PE loading, executable-section disassembly, function discovery, CFG recovery, imports/exports, strings, names, comments, bookmarks, persistent sidecar databases, and indexed cross-references. x64 unwind ranges from `.pdata` are used when present, and PE import calls are retained as call xrefs even when they use RIP-relative IAT indirection.
+- `paper_core`: PE loading, executable-section disassembly, function discovery, CFG recovery, imports/exports, strings, names, comments, bookmarks, persistent sidecar databases, indexed cross-references, direct-pointer switch tables, bounded stack/data-flow facts, noreturn propagation, MSVC RTTI, x64 unwind metadata, TLS callbacks, relocations, resources, and CodeView/PDB metadata.
 - `paper_ai`: a line-oriented MCP-compatible stdio server. AI clients can call the same analysis engine through structured tools without scraping a GUI.
 
 The analysis engine does not run a program, perform symbolic execution, call SMT/Z3, or ask a model to guess program facts. AI is an optional caller of the evidence API.
@@ -29,9 +29,11 @@ When enabled, Zydis is used only behind `X86Decoder`; the function, CFG, xref, a
 
 `paper_ai` speaks newline-delimited JSON-RPC with the MCP method names `initialize`, `tools/list`, and `tools/call`. The available tools include:
 
-`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `list_vtables`, `vtable_of`, `function_strings`, `list_runtime_functions`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
+`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `list_vtables`, `vtable_of`, `function_strings`, `list_runtime_functions`, `list_switches`, `stack_variables`, `function_dataflow`, `list_noreturn_functions`, `list_rtti`, `list_exceptions`, `list_tls_callbacks`, `list_relocations`, `list_resources`, `pdb_info`, `load_symbols`, `list_symbols`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
 
 `list_vtables` reports read-only data runs containing executable function pointers together with data references that install the table. `vtable_of` maps a known function address to its table slots. `xrefs_to` and `xrefs_from` accept either one `address` or an `addresses` array; passing a function start to `xrefs_from` aggregates the function's outgoing references. Unknown argument names are rejected instead of silently falling back to a default query.
+
+The recovery queries are evidence-first: direct-pointer jump tables, tracked RSP/RBP slots, constants, indirect targets, noreturn edges, RTTI descriptors, and PE directories are returned only when the bytes or metadata prove them. Relative jump tables, variable types, inheritance, or missing PDB symbols are not filled with confidence guesses.
 
 An MCP client only needs to register the executable as a local stdio server. The exact executable path depends on the client; no project-specific shell wrapper is required.
 
