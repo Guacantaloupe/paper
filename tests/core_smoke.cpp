@@ -24,6 +24,17 @@ int main() {
     assert(import_call.kind == paper::InstructionKind::IndirectCall);
     assert(import_call.rip_relative);
     assert(import_call.target && *import_call.target == 0x14000223aull);
+    const std::vector<std::uint8_t> stack_adjust{0x48, 0x83, 0xec, 0x20};
+    const auto adjust = decoder.decode(0x140001000, stack_adjust);
+    assert(adjust.mnemonic == "sub");
+    assert(adjust.destination_register == "rsp");
+    assert(adjust.immediate && *adjust.immediate == 0x20);
+    const std::vector<std::uint8_t> switch_jump{0xff, 0x24, 0xc5, 0xd8, 0x52, 0x1e, 0x14};
+    const auto indirect_jump = decoder.decode(0x140001000, switch_jump);
+    assert(indirect_jump.kind == paper::InstructionKind::IndirectJump);
+    assert(indirect_jump.memory_index == "rax");
+    assert(indirect_jump.memory_scale == 8);
+    assert(indirect_jump.target && *indirect_jump.target == 0x141e52d8ull);
     return 0;
 }
 
