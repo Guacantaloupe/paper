@@ -29,7 +29,9 @@ When enabled, Zydis is used only behind `X86Decoder`; the function, CFG, xref, a
 
 `paper_ai` speaks newline-delimited JSON-RPC with the MCP method names `initialize`, `tools/list`, and `tools/call`. The available tools include:
 
-`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
+`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `list_vtables`, `vtable_of`, `function_strings`, `list_runtime_functions`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
+
+`list_vtables` reports read-only data runs containing executable function pointers together with data references that install the table. `vtable_of` maps a known function address to its table slots. `xrefs_to` and `xrefs_from` accept either one `address` or an `addresses` array; passing a function start to `xrefs_from` aggregates the function's outgoing references. Unknown argument names are rejected instead of silently falling back to a default query.
 
 An MCP client only needs to register the executable as a local stdio server. The exact executable path depends on the client; no project-specific shell wrapper is required.
 
