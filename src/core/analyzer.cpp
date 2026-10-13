@@ -8,6 +8,7 @@
 #include <cctype>
 #include <charconv>
 #include <future>
+#include <fstream>
 #include <iomanip>
 #include <iterator>
 #include <mutex>
@@ -142,19 +143,29 @@ Analyzer::Analyzer() = default;
 bool Analyzer::open_file(const std::string& path, std::string& error) {
     PeImage image;
     if (!image.load_file(path, error)) return false;
-    std::unique_lock lock(mutex_);
-    image_ = std::move(image);
-    instructions_.clear();
-    instruction_index_.clear();
-    functions_.clear();
-    function_index_.clear();
-    blocks_.clear();
-    block_index_.clear();
-    xrefs_to_.clear();
-    xrefs_from_.clear();
-    strings_.clear();
-    stats_ = {};
-    analyze();
+    {
+        std::unique_lock lock(mutex_);
+        image_ = std::move(image);
+        instructions_.clear();
+        instruction_index_.clear();
+        functions_.clear();
+        function_index_.clear();
+        blocks_.clear();
+        block_index_.clear();
+        xrefs_to_.clear();
+        xrefs_from_.clear();
+        strings_.clear();
+        names_.clear();
+        comments_.clear();
+        bookmarks_.clear();
+        stats_ = {};
+        database_path_ = image_.info().path + ".paper.json";
+        analyze();
+    }
+    // An existing sidecar is optional. A failed load must not make opening a
+    // valid PE fail; the GUI reports the result when the user explicitly asks
+    // for a database load.
+    load_database(Json::object());
     return true;
 }
 
@@ -170,6 +181,10 @@ void Analyzer::clear() {
     xrefs_to_.clear();
     xrefs_from_.clear();
     strings_.clear();
+    names_.clear();
+    comments_.clear();
+    bookmarks_.clear();
+    database_path_.clear();
     stats_ = {};
 }
 
@@ -487,6 +502,10 @@ Json Analyzer::module_info() const {
     result["image_size"] = image_.info().image_size;
     result["pe32_plus"] = image_.info().pe32_plus;
     result["runtime_function_count"] = static_cast<std::uint64_t>(image_.runtime_functions().size());
+    result["database_path"] = database_path_;
+    result["name_count"] = static_cast<std::uint64_t>(names_.size());
+    result["comment_count"] = static_cast<std::uint64_t>(comments_.size());
+    result["bookmark_count"] = static_cast<std::uint64_t>(bookmarks_.size());
     return result;
 }
 
@@ -547,6 +566,7 @@ Json Analyzer::get_function(const Json& arguments) const {
     result["name"] = function->name;
     result["exported"] = function->exported;
     result["thunk"] = function->thunk;
+    if (const auto comment = comments_.find(function->start); comment != comments_.end()) result["comment"] = comment->second;
     Json block_list = Json::array();
     for (const auto address_value : function->blocks) block_list.push_back(address_json(address_value));
     result["blocks"] = std::move(block_list);
@@ -559,7 +579,12 @@ Json Analyzer::disassemble(const Json& arguments) const {
     const auto count = std::min<std::size_t>(argument_size(arguments, "count", 32), 10'000);
     Json result = Json::array();
     auto it = std::lower_bound(instructions_.begin(), instructions_.end(), address, [](const Instruction& instruction, Address value) { return instruction.address < value; });
-    for (std::size_t i = 0; it != instructions_.end() && i < count; ++it, ++i) result.push_back(instruction_json(*it));
+    for (std::size_t i = 0; it != instructions_.end() && i < count; ++it, ++i) {
+        Json item = instruction_json(*it);
+        if (const auto name = names_.find(it->address); name != names_.end()) item["name"] = name->second;
+        if (const auto comment = comments_.find(it->address); comment != comments_.end()) item["comment"] = comment->second;
+        result.push_back(std::move(item));
+    }
     return result;
 }
 
@@ -658,6 +683,12 @@ Json Analyzer::search_strings(const Json& arguments) const {
     return result;
 }
 
+Json Analyzer::list_strings(const Json& arguments) const {
+    // Keep both spellings: search_strings is the MCP-friendly action while
+    // list_strings is the IDA-style view name used by the GUI.
+    return search_strings(arguments);
+}
+
 Json Analyzer::search_bytes(const Json& arguments) const {
     std::shared_lock lock(mutex_);
     const auto pattern = arguments.find("pattern") ? parse_hex_bytes(arguments.find("pattern")->string_or("")) : std::vector<std::uint8_t>{};
@@ -711,6 +742,264 @@ Json Analyzer::list_exports(const Json& arguments) const {
         item["address"] = address_json(symbol.address);
         item["forwarded"] = symbol.forwarded;
         result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::list_names(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto query = arguments.find("query") ? arguments.find("query")->string_or("") : "";
+    const auto offset = argument_size(arguments, "offset", 0);
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 1000), 50'000);
+
+    struct NameRecord {
+        Address address = 0;
+        std::string name;
+        std::string kind;
+    };
+    std::unordered_map<Address, NameRecord> records;
+    records.reserve(functions_.size() + names_.size() + image_.imports().size() + image_.exports().size());
+    for (const auto& function : functions_) records[function.start] = {function.start, function.name, "function"};
+    for (const auto& symbol : image_.exports()) records[symbol.address] = {symbol.address, symbol.name, "export"};
+    for (const auto& symbol : image_.imports()) records[symbol.thunk] = {symbol.thunk, symbol.library + "!" + symbol.name, "import"};
+    for (const auto& [address, name] : names_) records[address] = {address, name, "user"};
+
+    std::vector<NameRecord> sorted;
+    sorted.reserve(records.size());
+    for (auto& [address, record] : records) {
+        if (contains_case_insensitive(record.name, query)) sorted.push_back(std::move(record));
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const NameRecord& left, const NameRecord& right) {
+        return left.address < right.address;
+    });
+
+    Json result = Json::array();
+    for (std::size_t index = offset; index < sorted.size() && result.array_items().size() < limit; ++index) {
+        Json item = Json::object();
+        item["address"] = address_json(sorted[index].address);
+        item["name"] = sorted[index].name;
+        item["kind"] = sorted[index].kind;
+        if (const auto comment = comments_.find(sorted[index].address); comment != comments_.end()) item["comment"] = comment->second;
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::list_bookmarks(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto offset = argument_size(arguments, "offset", 0);
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 1000), 50'000);
+    std::vector<std::pair<Address, std::string>> sorted(bookmarks_.begin(), bookmarks_.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+    Json result = Json::array();
+    for (std::size_t index = offset; index < sorted.size() && result.array_items().size() < limit; ++index) {
+        Json item = Json::object();
+        item["address"] = address_json(sorted[index].first);
+        item["comment"] = sorted[index].second;
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::set_name(const Json& arguments) {
+    std::unique_lock lock(mutex_);
+    const auto address = argument_address(arguments, "address");
+    const auto* name_value = arguments.find("name");
+    if (!address || !name_value || !name_value->is_string()) {
+        Json error = Json::object();
+        error["ok"] = false;
+        error["error"] = "address and name are required";
+        return error;
+    }
+    const auto name = name_value->as_string();
+    if (name.empty()) {
+        names_.erase(address);
+        if (const auto function = function_index_.find(address); function != function_index_.end()) {
+            auto& record = functions_[function->second];
+            record.name = "sub_" + address_string(address).substr(2);
+            for (const auto& symbol : image_.exports()) {
+                if (symbol.address == address) { record.name = symbol.name; break; }
+            }
+        }
+    } else {
+        names_[address] = name;
+        if (const auto function = function_index_.find(address); function != function_index_.end()) functions_[function->second].name = name;
+    }
+    Json result = Json::object();
+    result["ok"] = true;
+    result["address"] = address_json(address);
+    result["name"] = name;
+    return result;
+}
+
+Json Analyzer::set_comment(const Json& arguments) {
+    std::unique_lock lock(mutex_);
+    const auto address = argument_address(arguments, "address");
+    const auto* comment_value = arguments.find("comment");
+    if (!address || !comment_value || !comment_value->is_string()) {
+        Json error = Json::object();
+        error["ok"] = false;
+        error["error"] = "address and comment are required";
+        return error;
+    }
+    const auto comment = comment_value->as_string();
+    if (comment.empty()) comments_.erase(address);
+    else comments_[address] = comment;
+    Json result = Json::object();
+    result["ok"] = true;
+    result["address"] = address_json(address);
+    result["comment"] = comment;
+    return result;
+}
+
+Json Analyzer::set_bookmark(const Json& arguments) {
+    std::unique_lock lock(mutex_);
+    const auto address = argument_address(arguments, "address");
+    if (!address) {
+        Json error = Json::object();
+        error["ok"] = false;
+        error["error"] = "address is required";
+        return error;
+    }
+    const bool enabled = !arguments.find("enabled") || arguments.find("enabled")->as_bool(true);
+    const auto comment = arguments.find("comment") ? arguments.find("comment")->string_or("") : "";
+    if (enabled) bookmarks_[address] = comment;
+    else bookmarks_.erase(address);
+    Json result = Json::object();
+    result["ok"] = true;
+    result["address"] = address_json(address);
+    result["enabled"] = enabled;
+    result["comment"] = comment;
+    return result;
+}
+
+Json Analyzer::save_database(const Json& arguments) {
+    std::unique_lock lock(mutex_);
+    std::string path = arguments.find("path") ? arguments.find("path")->string_or("") : "";
+    if (path.empty()) path = database_path_;
+    Json result = Json::object();
+    if (path.empty() || image_.info().path.empty()) {
+        result["ok"] = false;
+        result["error"] = "no open image or database path";
+        return result;
+    }
+
+    Json document = Json::object();
+    document["version"] = 1;
+    document["image"] = image_.info().path;
+    Json names = Json::array();
+    std::vector<std::pair<Address, std::string>> sorted_names(names_.begin(), names_.end());
+    std::sort(sorted_names.begin(), sorted_names.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+    for (const auto& [address, name] : sorted_names) {
+        Json item = Json::object();
+        item["address"] = address_json(address);
+        item["name"] = name;
+        names.push_back(std::move(item));
+    }
+    document["names"] = std::move(names);
+    Json comments = Json::array();
+    std::vector<std::pair<Address, std::string>> sorted_comments(comments_.begin(), comments_.end());
+    std::sort(sorted_comments.begin(), sorted_comments.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+    for (const auto& [address, comment] : sorted_comments) {
+        Json item = Json::object();
+        item["address"] = address_json(address);
+        item["comment"] = comment;
+        comments.push_back(std::move(item));
+    }
+    document["comments"] = std::move(comments);
+    Json bookmarks = Json::array();
+    std::vector<std::pair<Address, std::string>> sorted_bookmarks(bookmarks_.begin(), bookmarks_.end());
+    std::sort(sorted_bookmarks.begin(), sorted_bookmarks.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+    for (const auto& [address, comment] : sorted_bookmarks) {
+        Json item = Json::object();
+        item["address"] = address_json(address);
+        item["comment"] = comment;
+        bookmarks.push_back(std::move(item));
+    }
+    document["bookmarks"] = std::move(bookmarks);
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        result["ok"] = false;
+        result["error"] = "cannot write database: " + path;
+        return result;
+    }
+    output << document.dump() << '\n';
+    if (!output.good()) {
+        result["ok"] = false;
+        result["error"] = "database write failed: " + path;
+        return result;
+    }
+    database_path_ = path;
+    result["ok"] = true;
+    result["path"] = path;
+    result["name_count"] = static_cast<std::uint64_t>(names_.size());
+    result["comment_count"] = static_cast<std::uint64_t>(comments_.size());
+    result["bookmark_count"] = static_cast<std::uint64_t>(bookmarks_.size());
+    return result;
+}
+
+Json Analyzer::load_database(const Json& arguments) {
+    std::string path;
+    {
+        std::shared_lock lock(mutex_);
+        path = arguments.find("path") ? arguments.find("path")->string_or("") : "";
+        if (path.empty()) path = database_path_;
+        if (path.empty() && !image_.info().path.empty()) path = image_.info().path + ".paper.json";
+    }
+    Json result = Json::object();
+    if (path.empty()) {
+        result["ok"] = false;
+        result["error"] = "no open image or database path";
+        return result;
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        result["ok"] = false;
+        result["error"] = "database not found: " + path;
+        return result;
+    }
+    try {
+        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        const Json document = Json::parse(text);
+        std::unordered_map<Address, std::string> names;
+        std::unordered_map<Address, std::string> comments;
+        std::unordered_map<Address, std::string> bookmarks;
+        auto read_entries = [](const Json* array, auto& output, std::string_view value_key) {
+            if (!array || !array->is_array()) return;
+            for (const auto& item : array->array_items()) {
+                const auto address = parse_address_value(item.find("address"));
+                const auto* value = item.find(value_key);
+                if (address && value && value->is_string() && *address) output[*address] = value->as_string();
+            }
+        };
+        read_entries(document.find("names"), names, "name");
+        read_entries(document.find("comments"), comments, "comment");
+        read_entries(document.find("bookmarks"), bookmarks, "comment");
+
+        std::unique_lock lock(mutex_);
+        names_ = std::move(names);
+        comments_ = std::move(comments);
+        bookmarks_ = std::move(bookmarks);
+        database_path_ = path;
+        for (auto& function : functions_) {
+            if (const auto custom = names_.find(function.start); custom != names_.end()) {
+                function.name = custom->second;
+                continue;
+            }
+            function.name = "sub_" + address_string(function.start).substr(2);
+            for (const auto& symbol : image_.exports()) {
+                if (symbol.address == function.start) { function.name = symbol.name; break; }
+            }
+        }
+        result["ok"] = true;
+        result["path"] = path;
+        result["name_count"] = static_cast<std::uint64_t>(names_.size());
+        result["comment_count"] = static_cast<std::uint64_t>(comments_.size());
+        result["bookmark_count"] = static_cast<std::uint64_t>(bookmarks_.size());
+    } catch (const std::exception& exception) {
+        result["ok"] = false;
+        result["error"] = std::string("invalid database: ") + exception.what();
     }
     return result;
 }
@@ -784,7 +1073,7 @@ Json Analyzer::analysis_stats() const {
     return result;
 }
 
-Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok) const {
+Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok) {
     ok = true;
     if (name == "module_info") return module_info();
     if (name == "list_sections") return list_sections();
@@ -796,11 +1085,19 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
     if (name == "xrefs_from") return xrefs_from(arguments);
     if (name == "cfg") return cfg(arguments);
     if (name == "search_strings") return search_strings(arguments);
+    if (name == "list_strings") return list_strings(arguments);
     if (name == "search_bytes") return search_bytes(arguments);
     if (name == "list_imports") return list_imports(arguments);
     if (name == "list_exports") return list_exports(arguments);
+    if (name == "list_names") return list_names(arguments);
+    if (name == "list_bookmarks") return list_bookmarks(arguments);
     if (name == "call_graph") return call_graph(arguments);
     if (name == "analysis_stats") return analysis_stats();
+    if (name == "set_name") return set_name(arguments);
+    if (name == "set_comment") return set_comment(arguments);
+    if (name == "set_bookmark") return set_bookmark(arguments);
+    if (name == "save_database") return save_database(arguments);
+    if (name == "load_database") return load_database(arguments);
     ok = false;
     Json error = Json::object();
     error["error"] = "unknown tool: " + std::string(name);
