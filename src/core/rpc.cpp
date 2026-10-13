@@ -150,16 +150,25 @@ Json McpServer::handle(const Json& request) {
     Json result = Json::object();
     bool ok = true;
     if (name_value->as_string() == "open_binary") {
+        for (const auto& [key, value] : args.object_items()) {
+            if (key != "path") {
+                ok = false;
+                result["error"] = "unknown argument: " + key;
+                break;
+            }
+        }
         const auto* path = args.find("path");
         std::string error;
-        ok = path && path->is_string() && analyzer_.open_file(path->as_string(), error);
+        if (ok) ok = path && path->is_string() && analyzer_.open_file(path->as_string(), error);
         if (ok) {
             result["ok"] = true;
             result["module"] = analyzer_.module_info();
             result["stats"] = analyzer_.analysis_stats();
-        } else {
+        } else if (!result.find("error")) {
             result["ok"] = false;
             result["error"] = error.empty() ? "path is required" : error;
+        } else {
+            result["ok"] = false;
         }
     } else {
         result = analyzer_.call_tool(name_value->as_string(), args, ok);
@@ -290,6 +299,62 @@ Json McpServer::tool_list() const {
         properties["offset"] = schema_number();
         properties["limit"] = schema_number();
         tools.push_back(tool("list_runtime_functions", "List authoritative x64 PE .pdata runtime function ranges.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["function_address"] = schema_string();
+        properties["address"] = schema_string();
+        tools.push_back(tool("list_switches", "Recover proven direct-pointer jump tables and their executable case targets.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["function_address"] = schema_string();
+        properties["address"] = schema_string();
+        tools.push_back(tool("stack_variables", "Map proven RSP/RBP-relative accesses to entry-frame stack slots.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["function_address"] = schema_string();
+        properties["address"] = schema_string();
+        tools.push_back(tool("function_dataflow", "Perform bounded straight-line constant and indirect-target propagation.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["query"] = schema_string();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_noreturn_functions", "List functions proven to terminate by known APIs, wrappers, or traps.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["query"] = schema_string();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_rtti", "Parse verifiable MSVC RTTI descriptors associated with discovered vtables.", std::move(properties)));
+    }
+    for (const auto name : {"list_exceptions", "list_relocations"}) {
+        Json properties = Json::object();
+        properties["offset"] = schema_number();
+        properties["limit"] = schema_number();
+        tools.push_back(tool(name, name == std::string_view("list_exceptions") ? "List x64 unwind and exception-handler metadata." : "List PE base relocation entries.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["query"] = schema_string();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_resources", "List PE resource tree leaves and data ranges.", std::move(properties)));
+    }
+    tools.push_back(tool("list_tls_callbacks", "List statically mapped TLS callback addresses.", Json::object()));
+    tools.push_back(tool("pdb_info", "Return embedded CodeView/PDB identity without fabricating symbols.", Json::object()));
+    {
+        Json properties = Json::object();
+        properties["path"] = schema_string();
+        tools.push_back(tool("load_symbols", "Load available PDB symbols through Windows DbgHelp when supported.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["query"] = schema_string();
+        properties["offset"] = schema_number();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_symbols", "List symbols loaded from PDB/DbgHelp.", std::move(properties)));
     }
     {
         Json properties = Json::object();
