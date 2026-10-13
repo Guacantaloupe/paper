@@ -893,11 +893,17 @@ std::vector<Analyzer::RttiRecord> Analyzer::discover_rtti() const {
         if (table.start < pointer_size) continue;
         const auto locator = read_pointer(table.start - pointer_size);
         if (!locator || !image_.section_for_address(*locator)) continue;
-        const auto type_rva = read_u32(*locator + 12);
-        const auto hierarchy_rva = read_u32(*locator + 16);
-        if (!type_rva || !hierarchy_rva) continue;
-        const auto descriptor = rva_address(*type_rva);
-        const auto hierarchy = rva_address(*hierarchy_rva);
+        std::optional<Address> descriptor;
+        std::optional<Address> hierarchy;
+        if (image_.info().pe32_plus) {
+            const auto type_rva = read_u32(*locator + 12);
+            const auto hierarchy_rva = read_u32(*locator + 16);
+            if (type_rva) descriptor = rva_address(*type_rva);
+            if (hierarchy_rva) hierarchy = rva_address(*hierarchy_rva);
+        } else {
+            descriptor = read_pointer(*locator + 12);
+            hierarchy = read_pointer(*locator + 16);
+        }
         if (!descriptor || !hierarchy) continue;
         const auto type_name = descriptor_name(*descriptor);
         if (type_name.empty()) continue;
@@ -909,14 +915,17 @@ std::vector<Analyzer::RttiRecord> Analyzer::discover_rtti() const {
         const auto count = read_u32(*hierarchy + 8);
         const auto array_rva = read_u32(*hierarchy + 12);
         if (count && array_rva && *count < 1024) {
-            const auto array = rva_address(*array_rva);
+            const auto array = image_.info().pe32_plus ? rva_address(*array_rva) : read_pointer(*hierarchy + 12);
             if (array) {
                 for (std::uint32_t index = 0; index < *count; ++index) {
-                    const auto base_rva = read_u32(*array + static_cast<Address>(index) * 4);
-                    if (!base_rva) continue;
-                    if (const auto base = rva_address(*base_rva)) {
-                        const auto base_type_rva = read_u32(*base);
-                        if (base_type_rva) if (const auto base_type = rva_address(*base_type_rva)) {
+                    const auto base = image_.info().pe32_plus
+                        ? (read_u32(*array + static_cast<Address>(index) * 4) ? rva_address(*read_u32(*array + static_cast<Address>(index) * 4)) : std::nullopt)
+                        : read_pointer(*array + static_cast<Address>(index) * 4);
+                    if (base) {
+                        const auto base_type = image_.info().pe32_plus
+                            ? (read_u32(*base) ? rva_address(*read_u32(*base)) : std::nullopt)
+                            : read_pointer(*base);
+                        if (base_type) {
                             const auto name = descriptor_name(*base_type);
                             if (!name.empty()) record.bases.push_back(name);
                         }
