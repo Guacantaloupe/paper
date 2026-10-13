@@ -47,7 +47,12 @@ Json address_json(Address address) {
 }
 
 std::string lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    // Keep the transform's input and output value types identical.  MSVC's
+    // STL warns when a `char` from the input range is implicitly converted to
+    // the lambda's `unsigned char` parameter (C4244/C4245 under /W4).
+    std::transform(value.begin(), value.end(), value.begin(), [](char c) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    });
     return value;
 }
 
@@ -1294,12 +1299,16 @@ Json Analyzer::load_symbols(const Json& arguments) {
     const auto search_path = arguments.find("path") ? arguments.find("path")->string_or("") : "";
     HANDLE process = GetCurrentProcess();
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
-    if (!SymInitializeA(process, search_path.empty() ? nullptr : search_path.c_str(), FALSE)) {
+    // DbgHelp exposes the narrow entry points as the undecorated APIs in the
+    // Windows SDK.  The explicit `...A` spellings are not declared by all
+    // SDK revisions, so use the SDK-stable names here (the arguments are
+    // deliberately narrow strings).
+    if (!SymInitialize(process, search_path.empty() ? nullptr : search_path.c_str(), FALSE)) {
         result["ok"] = false;
         result["error"] = "SymInitialize failed: " + std::to_string(GetLastError());
         return result;
     }
-    const auto base = SymLoadModuleExA(process, nullptr, image_.info().path.c_str(), nullptr,
+    const auto base = SymLoadModuleEx(process, nullptr, image_.info().path.c_str(), nullptr,
                                        image_.info().image_base, image_.info().image_size, nullptr, 0);
     if (base == 0) {
         result["ok"] = false;
@@ -2093,4 +2102,5 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
 }
 
 } // namespace paper
+
 
