@@ -139,6 +139,7 @@ Json McpServer::tool_list() const {
     }
     tools.push_back(tool("module_info", "Return PE identity, architecture, image base, and entry point.", Json::object()));
     tools.push_back(tool("list_sections", "List PE sections and their permissions and address ranges.", Json::object()));
+    tools.push_back(tool("list_segments", "List PE segments using IDA terminology; equivalent to list_sections.", Json::object()));
     {
         Json properties = Json::object();
         properties["offset"] = schema_number();
