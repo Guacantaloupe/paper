@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string_view>
 #include <shared_mutex>
@@ -34,6 +35,8 @@ public:
     Json get_function(const Json& arguments) const;
     Json disassemble(const Json& arguments) const;
     Json read_bytes(const Json& arguments) const;
+    Json read_struct(const Json& arguments) const;
+    Json describe_address(const Json& arguments) const;
     Json xrefs_to(const Json& arguments) const;
     Json xrefs_from(const Json& arguments) const;
     Json cfg(const Json& arguments) const;
@@ -68,6 +71,14 @@ public:
     Json list_symbols(const Json& arguments) const;
     Json call_graph(const Json& arguments) const;
     Json analysis_stats() const;
+
+    // Host applications can register deterministic decoders for proprietary
+    // asset containers without teaching the PE core about every game format.
+    // The callback receives the requested format and path and returns a JSON
+    // value containing only facts it can prove from that asset.
+    using AssetDecoder = std::function<Json(std::string_view format, std::string_view path)>;
+    bool register_asset_decoder(std::string format, AssetDecoder decoder, std::string& error);
+    Json decode_asset(const Json& arguments) const;
 
     // IDA-style database annotations. These are deliberately kept separate
     // from the decoded PE bytes so analysis remains repeatable and the
@@ -157,6 +168,7 @@ private:
     mutable std::unordered_map<Address, std::vector<SwitchRecord>> switch_cache_;
     mutable std::mutex switch_cache_mutex_;
     std::unordered_map<std::string, std::vector<std::size_t>> mnemonic_index_;
+    std::unordered_map<std::string, AssetDecoder> asset_decoders_;
     std::unordered_map<Address, std::string> names_;
     std::unordered_map<Address, std::string> comments_;
     std::unordered_map<Address, std::string> bookmarks_;
