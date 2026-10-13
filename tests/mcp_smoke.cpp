@@ -41,6 +41,10 @@ int main() {
     assert(output.str().find("analyze_function") != std::string::npos);
     assert(output.str().find("function_signature") != std::string::npos);
     assert(output.str().find("object_fields") != std::string::npos);
+    assert(output.str().find("read_struct") != std::string::npos);
+    assert(output.str().find("describe_address") != std::string::npos);
+    assert(output.str().find("decode_asset") != std::string::npos);
+    assert(output.str().find("\"output\"") != std::string::npos);
 
     const auto unicode = paper::Json::parse(R"({"text":"\u4e2d\u6587 \ud83d\ude80"})");
     assert(unicode.find("text") && unicode.find("text")->as_string() == "中文 🚀");
