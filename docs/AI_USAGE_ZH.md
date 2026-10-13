@@ -39,8 +39,15 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 12. `list_vtables()`、`vtable_of()`：枚举只读数据中的函数指针表，并把虚函数地址映射到表槽位。
 13. `function_strings()`：列出单个函数直接引用的字符串。
 14. `list_runtime_functions()`：导出 x64 PE `.pdata` 的运行时函数范围。
-15. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
-16. `save_database({"path":"..."})`、`load_database()`：保存或恢复数据库；保存路径可以指向用户可写目录，不必写回 Program Files。
+15. `list_switches({"function_address":"0x..."})`：恢复有直接指针证据的 `jmp [index*8+table]` 跳转表和 case 目标。
+16. `stack_variables({"function_address":"0x..."})`：按已追踪的 RSP/RBP 相对访问列出栈槽，不猜变量类型。
+17. `function_dataflow({"function_address":"0x..."})`：执行有限的直线常量传播和间接调用目标解析。
+18. `list_noreturn_functions()`：列出由已知终止 API、可传播包装函数或明确陷阱证明为 noreturn 的函数。
+19. `list_rtti()`：从已确认的虚表前置 Complete Object Locator 读取 MSVC RTTI 类名和基类数组。
+20. `list_exceptions()`、`list_tls_callbacks()`、`list_relocations()`、`list_resources()`：读取 PE 异常/展开信息、TLS 回调、基址重定位和资源叶节点。
+21. `pdb_info()`、`load_symbols()`、`list_symbols()`：读取嵌入 CodeView 身份；Windows 下可通过 DbgHelp 加载可用 PDB 符号。
+22. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
+23. `save_database({"path":"..."})`、`load_database()`：保存或恢复数据库；保存路径可以指向用户可写目录，不必写回 Program Files。
 
 ## 经典 xrefs 查询
 
@@ -89,6 +96,16 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `vtable_of` | 查找函数所属虚表和槽位 |
 | `function_strings` | 查询单函数引用的字符串 |
 | `list_runtime_functions` | 导出 `.pdata` 函数范围 |
+| `list_switches` | 恢复直接指针跳转表和 case 目标 |
+| `stack_variables` | RSP/RBP 相对栈槽映射 |
+| `function_dataflow` | 有界常量传播和间接目标 |
+| `list_noreturn_functions` | 终止函数传播结果 |
+| `list_rtti` | MSVC RTTI 类名和继承数组 |
+| `list_exceptions` | x64 `.pdata` 展开/异常处理信息 |
+| `list_tls_callbacks` | TLS 回调地址 |
+| `list_relocations` | PE 基址重定位项 |
+| `list_resources` | PE 资源树叶节点 |
+| `pdb_info` / `load_symbols` / `list_symbols` | CodeView 身份和可用 PDB 符号 |
 | `call_graph` | 调用者/被调用者遍历 |
 | `set_name` / `set_comment` | 写入或清除地址标注 |
 | `set_bookmark` | 写入或清除地址书签 |
@@ -100,6 +117,8 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 `xrefs_to` 和 `xrefs_from` 同时接受单个 `address` 或 `addresses` 数组；当 `xrefs_from` 的地址正好是函数起始地址时，会合并该函数所有指令的出向引用。未知参数会返回错误，不会静默退回默认查询。
 
 如果本地构建启用了 Zydis（CMake 选项 `PAPER_WITH_ZYDIS=ON`），AI 不需要改变任何调用方式：同一组 MCP 工具会自动获得更完整的 x86-64 指令文本和控制流目标。
+
+跳转表、栈槽和数据流接口只返回能够从指令、映像数据或 PE 元数据直接验证的关系。无法证明的相对跳转表、变量类型、继承关系或符号不会被填成猜测值；这也是为什么某些压缩、混淆或缺少 PDB 的样本会返回空数组。
 
 ## 中文界面
 
