@@ -24,7 +24,7 @@ Paper 的 AI 接口是一个本地 MCP stdio 服务器。AI 客户端启动 `pap
 AI 接到一个逆向任务后，可以按下面的顺序调用：
 
 1. `open_binary({"path":"..."})`：打开 EXE、DLL 或 SYS，并建立一次索引。
-2. `module_info()`、`list_sections()`：确认架构、镜像基址、入口点和可执行区间。
+2. `module_info()`、`list_sections()`/`list_segments()`：确认架构、镜像基址、入口点和可执行区间。
 3. `list_exports()`、`list_imports()`：先利用已有符号确定模块边界和 API 角色。
 4. `list_functions()`：获取函数地址、名称、范围和基本块数量。
 5. `disassemble({"address":"0x...","count":80})`：读取局部指令。
@@ -65,6 +65,7 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `open_binary` | 打开并索引一个 PE 文件 |
 | `module_info` | 架构、基址、入口点、镜像大小 |
 | `list_sections` | 节区范围和读写执行权限 |
+| `list_segments` | IDA 术语下的段列表（等同于 `list_sections`） |
 | `list_functions` | 函数列表和分页 |
 | `get_function` | 按地址或名称取得函数摘要 |
 | `disassemble` | 从地址读取反汇编指令 |
