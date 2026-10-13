@@ -293,7 +293,7 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["query"] = schema_string();
         if (name == std::string_view("list_imports")) properties["summary"] = schema_bool();
-        tools.push_back(tool(name, name == std::string_view("list_imports") ? "List imported DLL symbols and IAT addresses." : "List exported names, ordinals, and addresses.", std::move(properties)));
+        tools.push_back(tool(name, name == std::string_view("list_imports") ? "List imports with descriptor/FirstThunk facts (summary object by default; summary:false keeps the legacy array)." : "List exported names, ordinals, and addresses.", std::move(properties)));
     }
     {
         Json properties = Json::object();
