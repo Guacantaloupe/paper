@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string_view>
 #include <shared_mutex>
 #include <string>
@@ -38,6 +39,8 @@ public:
     Json cfg(const Json& arguments) const;
     Json search_strings(const Json& arguments) const;
     Json list_strings(const Json& arguments) const;
+    Json find_instructions(const Json& arguments) const;
+    Json source_locations(const Json& arguments) const;
     Json search_bytes(const Json& arguments) const;
     Json list_imports(const Json& arguments) const;
     Json list_exports(const Json& arguments) const;
@@ -122,6 +125,7 @@ private:
     static Address argument_address(const Json& arguments, std::string_view key);
     static std::size_t argument_size(const Json& arguments, std::string_view key, std::size_t fallback);
     static std::string address_string(Address address);
+    Json xref_json(const Xref& xref) const;
     std::vector<VtableRecord> discover_vtables() const;
     std::vector<RttiRecord> discover_rtti() const;
     std::vector<SwitchRecord> discover_switches(const Function* function) const;
@@ -150,6 +154,9 @@ private:
     mutable bool vtable_cache_valid_ = false;
     mutable std::vector<RttiRecord> rtti_cache_;
     mutable bool rtti_cache_valid_ = false;
+    mutable std::unordered_map<Address, std::vector<SwitchRecord>> switch_cache_;
+    mutable std::mutex switch_cache_mutex_;
+    std::unordered_map<std::string, std::vector<std::size_t>> mnemonic_index_;
     std::unordered_map<Address, std::string> names_;
     std::unordered_map<Address, std::string> comments_;
     std::unordered_map<Address, std::string> bookmarks_;
