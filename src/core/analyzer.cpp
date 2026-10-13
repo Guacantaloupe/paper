@@ -2440,7 +2440,10 @@ Json Analyzer::search_bytes(const Json& arguments) const {
 Json Analyzer::list_imports(const Json& arguments) const {
     std::shared_lock lock(mutex_);
     const auto query = arguments.find("query") ? arguments.find("query")->string_or("") : "";
-    const auto summary = arguments.find("summary") && arguments.find("summary")->as_bool();
+    // The truthful descriptor summary is the default API shape.  Callers that
+    // need the pre-summary array (the legacy GUI list view) can pass
+    // summary:false explicitly.
+    const auto summary = !arguments.find("summary") || arguments.find("summary")->as_bool();
     Json imports = Json::array();
     for (const auto& symbol : image_.imports()) {
         const auto full = symbol.library + "!" + symbol.name;
