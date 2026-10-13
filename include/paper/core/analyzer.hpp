@@ -5,8 +5,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <shared_mutex>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
@@ -34,13 +36,25 @@ public:
     Json xrefs_from(const Json& arguments) const;
     Json cfg(const Json& arguments) const;
     Json search_strings(const Json& arguments) const;
+    Json list_strings(const Json& arguments) const;
     Json search_bytes(const Json& arguments) const;
     Json list_imports(const Json& arguments) const;
     Json list_exports(const Json& arguments) const;
+    Json list_names(const Json& arguments) const;
+    Json list_bookmarks(const Json& arguments) const;
     Json call_graph(const Json& arguments) const;
     Json analysis_stats() const;
 
-    Json call_tool(std::string_view name, const Json& arguments, bool& ok) const;
+    // IDA-style database annotations. These are deliberately kept separate
+    // from the decoded PE bytes so analysis remains repeatable and the
+    // sidecar can be shared by the GUI and the local AI/MCP client.
+    Json set_name(const Json& arguments);
+    Json set_comment(const Json& arguments);
+    Json set_bookmark(const Json& arguments);
+    Json save_database(const Json& arguments);
+    Json load_database(const Json& arguments);
+
+    Json call_tool(std::string_view name, const Json& arguments, bool& ok);
 
 private:
     struct BlockRecord {
@@ -70,6 +84,10 @@ private:
     std::unordered_map<Address, std::vector<Xref>> xrefs_to_;
     std::unordered_map<Address, std::vector<Xref>> xrefs_from_;
     std::vector<StringLiteral> strings_;
+    std::unordered_map<Address, std::string> names_;
+    std::unordered_map<Address, std::string> comments_;
+    std::unordered_map<Address, std::string> bookmarks_;
+    std::string database_path_;
     AnalysisStats stats_;
 };
 
