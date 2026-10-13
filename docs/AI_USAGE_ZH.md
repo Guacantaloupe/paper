@@ -2,6 +2,8 @@
 
 Paper 的 AI 接口是一个本地 MCP stdio 服务器。AI 客户端启动 `paper_ai.exe` 后，通过标准输入输出交换一行一条 JSON-RPC 消息。Paper 自己完成 PE 解析和静态索引，AI 只负责提出查询、组织证据和解释结果。
 
+服务器遵循 MCP 初始化顺序：客户端发送 `initialize`，收到响应后发送 `notifications/initialized`，再调用 `tools/list` 和 `tools/call`。`ping` 可用于健康检查。通知消息不会产生输出；协议错误会返回标准 JSON-RPC `error` 对象。中文函数名、注释和路径支持 UTF-8 及 JSON `\\uXXXX` 转义。
+
 ## 注册方式
 
 在支持 MCP 的客户端配置一个本地服务器，直接指向编译出来的 `paper_ai.exe`：
@@ -89,4 +91,8 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 所有查询都读取已经建立的内存索引。`xrefs_to`、`xrefs_from`、函数查找和 CFG 查询不重新扫描文件；分页参数用于避免大程序把整个结果一次性送给 AI。`module_info.runtime_function_count` 可以用来判断 PE 是否提供了 x64 `.pdata` 函数边界证据；`analysis_stats` 可用来记录多核分析耗时和工作线程数。
 
 如果本地构建启用了 Zydis（CMake 选项 `PAPER_WITH_ZYDIS=ON`），AI 不需要改变任何调用方式：同一组 MCP 工具会自动获得更完整的 x86-64 指令文本和控制流目标。
+
+## 中文界面
+
+Paper 默认使用简体中文界面。通过顶部菜单“视图 → 语言”可以切换到 English；切换不会改变窗口的内部布局 ID，已有 Docking 布局可以继续使用。中文字体会优先尝试 Windows 的 Microsoft YaHei 或 SimSun，并合并到界面和等宽代码字体中。
 
