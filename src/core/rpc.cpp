@@ -184,6 +184,13 @@ Json McpServer::tool_list() const {
     }
     {
         Json properties = Json::object();
+        properties["query"] = schema_string();
+        properties["min_length"] = schema_number();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_strings", "List the indexed string literals for an IDA-style Strings view.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
         properties["pattern"] = schema_string();
         properties["limit"] = schema_number();
         tools.push_back(tool("search_bytes", "Search raw image bytes using a hexadecimal pattern.", std::move(properties), required_list({"pattern"})));
@@ -195,10 +202,48 @@ Json McpServer::tool_list() const {
     }
     {
         Json properties = Json::object();
+        properties["query"] = schema_string();
+        properties["offset"] = schema_number();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_names", "List function, import, export, and user-defined names.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["offset"] = schema_number();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_bookmarks", "List persistent address bookmarks and their comments.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
         properties["function_address"] = schema_string();
         properties["direction"] = schema_string();
         properties["depth"] = schema_number();
         tools.push_back(tool("call_graph", "Traverse indexed call edges toward callees or callers.", std::move(properties), required_list({"function_address"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        properties["name"] = schema_string();
+        tools.push_back(tool("set_name", "Set or clear an IDA-style user name at an address.", std::move(properties), required_list({"address", "name"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        properties["comment"] = schema_string();
+        tools.push_back(tool("set_comment", "Set or clear a repeatable comment at an address.", std::move(properties), required_list({"address", "comment"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        properties["enabled"] = Json::object();
+        properties["enabled"]["type"] = "boolean";
+        properties["comment"] = schema_string();
+        tools.push_back(tool("set_bookmark", "Create, update, or remove an address bookmark.", std::move(properties), required_list({"address"})));
+    }
+    for (const auto name : {"save_database", "load_database"}) {
+        Json properties = Json::object();
+        properties["path"] = schema_string();
+        tools.push_back(tool(name, name == std::string_view("save_database") ? "Save names, comments, and bookmarks to a Paper sidecar database." : "Load names, comments, and bookmarks from a Paper sidecar database.", std::move(properties)));
     }
     tools.push_back(tool("analysis_stats", "Return analysis time, worker count, and index sizes.", Json::object()));
     result["tools"] = std::move(tools);
