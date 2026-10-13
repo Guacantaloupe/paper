@@ -50,6 +50,10 @@ public:
     Json list_switches(const Json& arguments) const;
     Json stack_variables(const Json& arguments) const;
     Json function_dataflow(const Json& arguments) const;
+    Json function_signature(const Json& arguments) const;
+    Json object_fields(const Json& arguments) const;
+    Json function_xrefs(const Json& arguments) const;
+    Json analyze_function(const Json& arguments) const;
     Json list_noreturn_functions(const Json& arguments) const;
     Json list_rtti(const Json& arguments) const;
     Json list_exceptions(const Json& arguments) const;
@@ -97,7 +101,15 @@ private:
         Address instruction = 0;
         Address table = 0;
         std::size_t entry_size = 0;
+        bool relative = false;
+        Address table_end = 0;
         std::vector<Address> targets;
+    };
+
+    struct IndirectTargetRecord {
+        Address instruction = 0;
+        Address target = 0;
+        InstructionKind kind = InstructionKind::IndirectCall;
     };
 
     void analyze();
@@ -113,6 +125,7 @@ private:
     std::vector<VtableRecord> discover_vtables() const;
     std::vector<RttiRecord> discover_rtti() const;
     std::vector<SwitchRecord> discover_switches(const Function* function) const;
+    std::vector<IndirectTargetRecord> collect_indirect_targets(const Function* function) const;
     void propagate_noreturn();
     bool is_noreturn_target(Address address) const;
     static bool known_noreturn_name(std::string_view name);
@@ -145,5 +158,4 @@ private:
 };
 
 } // namespace paper
-
 
