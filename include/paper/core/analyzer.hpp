@@ -47,6 +47,18 @@ public:
     Json vtable_of(const Json& arguments) const;
     Json function_strings(const Json& arguments) const;
     Json list_runtime_functions(const Json& arguments) const;
+    Json list_switches(const Json& arguments) const;
+    Json stack_variables(const Json& arguments) const;
+    Json function_dataflow(const Json& arguments) const;
+    Json list_noreturn_functions(const Json& arguments) const;
+    Json list_rtti(const Json& arguments) const;
+    Json list_exceptions(const Json& arguments) const;
+    Json list_tls_callbacks(const Json& arguments) const;
+    Json list_relocations(const Json& arguments) const;
+    Json list_resources(const Json& arguments) const;
+    Json pdb_info(const Json& arguments) const;
+    Json load_symbols(const Json& arguments);
+    Json list_symbols(const Json& arguments) const;
     Json call_graph(const Json& arguments) const;
     Json analysis_stats() const;
 
@@ -73,6 +85,21 @@ private:
         std::vector<Address> slots;
     };
 
+    struct RttiRecord {
+        Address vtable = 0;
+        Address complete_object_locator = 0;
+        Address type_descriptor = 0;
+        std::string type_name;
+        std::vector<std::string> bases;
+    };
+
+    struct SwitchRecord {
+        Address instruction = 0;
+        Address table = 0;
+        std::size_t entry_size = 0;
+        std::vector<Address> targets;
+    };
+
     void analyze();
     void build_functions_and_cfg(const std::vector<Address>& starts);
     void build_strings();
@@ -84,6 +111,11 @@ private:
     static std::size_t argument_size(const Json& arguments, std::string_view key, std::size_t fallback);
     static std::string address_string(Address address);
     std::vector<VtableRecord> discover_vtables() const;
+    std::vector<RttiRecord> discover_rtti() const;
+    std::vector<SwitchRecord> discover_switches(const Function* function) const;
+    void propagate_noreturn();
+    bool is_noreturn_target(Address address) const;
+    static bool known_noreturn_name(std::string_view name);
 
     mutable std::shared_mutex mutex_;
     PeImage image_;
@@ -96,6 +128,11 @@ private:
     std::unordered_map<Address, std::vector<Xref>> xrefs_to_;
     std::unordered_map<Address, std::vector<Xref>> xrefs_from_;
     std::vector<StringLiteral> strings_;
+    std::vector<DebugSymbol> symbols_;
+    std::string symbol_source_;
+    std::unordered_set<Address> noreturn_targets_;
+    std::unordered_set<Address> noreturn_functions_;
+    std::unordered_map<Address, std::string> noreturn_reasons_;
     std::unordered_map<Address, std::string> names_;
     std::unordered_map<Address, std::string> comments_;
     std::unordered_map<Address, std::string> bookmarks_;
