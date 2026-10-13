@@ -54,6 +54,14 @@ bool json_bool(const Json& value, std::string_view key, bool fallback = false) {
     return item ? item->as_bool(fallback) : fallback;
 }
 
+std::string json_display(const Json& value, std::string_view key) {
+    const auto* item = value.find(key);
+    if (!item) return {};
+    if (item->is_string()) return item->as_string();
+    if (item->is_number()) return std::to_string(item->as_u64());
+    return {};
+}
+
 std::string address_text(Address address) {
     char buffer[32]{};
     std::snprintf(buffer, sizeof(buffer), "0x%llX", static_cast<unsigned long long>(address));
@@ -106,6 +114,7 @@ struct UiState {
     bool show_functions = true;
     bool show_side = true;
     bool show_lists = true;
+    bool show_search = false;
     bool show_output = true;
     int side_selection_request = -1;
     int center_selection_request = -1;
@@ -125,6 +134,7 @@ struct UiState {
     std::vector<Json> exports;
     std::vector<Json> sections;
     std::vector<Json> bookmarks;
+    std::vector<Json> search_results;
     Json properties = Json::object();
     Json cfg = Json::object();
     std::string hex_text;
@@ -135,6 +145,7 @@ struct UiState {
     std::array<char, 256> name_edit{};
     std::array<char, 512> comment_edit{};
     std::array<char, 256> bookmark_edit{};
+    std::array<char, 256> search_pattern{};
     std::array<char, 96> goto_address{};
 };
 
@@ -323,6 +334,21 @@ void action_lists(UiState& state, int tab = 0) {
     state.show_lists = true;
 }
 
+void action_search(UiState& state) {
+    if (!state.has_image) return;
+    state.show_search = true;
+}
+
+void run_search(UiState& state) {
+    if (!state.has_image || state.search_pattern[0] == '\0') return;
+    Json arguments = Json::object();
+    arguments["pattern"] = std::string(state.search_pattern.data());
+    arguments["limit"] = 10'000;
+    const auto result = state.analyzer.search_bytes(arguments);
+    state.search_results.assign(result.array_items().begin(), result.array_items().end());
+    append_log(state, "Byte search returned " + std::to_string(state.search_results.size()) + " result(s)");
+}
+
 void action_save_database(UiState& state) {
     if (!state.has_image) return;
     const auto result = state.analyzer.save_database(Json::object());
@@ -483,6 +509,7 @@ void build_default_layout() {
     ImGui::DockBuilderDockWindow("Xrefs / Properties", right);
     ImGui::DockBuilderDockWindow("IDA Lists", right);
     ImGui::DockBuilderDockWindow("Output", bottom);
+    ImGui::DockBuilderDockWindow("Search", bottom);
     ImGui::DockBuilderDockWindow("IDA View-A", center);
     ImGui::DockBuilderFinish(dockspace);
 }
@@ -504,6 +531,7 @@ void draw_menu(UiState& state) {
             const auto info = state.analyzer.module_info();
             if (const auto entry = parse_address(json_string(info, "entry_point"))) navigate(state, *entry);
         }
+        if (ImGui::MenuItem("Search bytes...", "Ctrl+F", false, state.has_image)) action_search(state);
         ImGui::SetNextItemWidth(170.0f);
         ImGui::InputText("##goto_menu", state.goto_address.data(), state.goto_address.size(), ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
@@ -530,6 +558,7 @@ void draw_menu(UiState& state) {
         ImGui::MenuItem("Functions", nullptr, &state.show_functions);
         ImGui::MenuItem("Xrefs / Properties", nullptr, &state.show_side);
         ImGui::MenuItem("IDA Lists", nullptr, &state.show_lists);
+        ImGui::MenuItem("Search", nullptr, &state.show_search);
         ImGui::MenuItem("Output", nullptr, &state.show_output);
         ImGui::EndMenu();
     }
@@ -553,6 +582,7 @@ void handle_shortcuts(UiState& state) {
     }
     if (ImGui::IsKeyPressed(ImGuiKey_X)) state.side_selection_request = 0;
     if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_F)) action_cfg(state);
+    if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_F)) action_search(state);
     if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_U)) action_call_graph(state, "callers");
     if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_D)) action_call_graph(state, "callees");
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_I)) action_imports(state);
@@ -617,6 +647,8 @@ void draw_toolbar(UiState& state) {
     if (ImGui::Button("Exports")) action_exports(state);
     ImGui::SameLine();
     if (ImGui::Button("Lists")) action_lists(state);
+    ImGui::SameLine();
+    if (ImGui::Button("Search")) action_search(state);
     ImGui::SameLine();
     if (ImGui::Button("Mark")) action_toggle_bookmark(state);
     ImGui::SameLine();
@@ -966,6 +998,31 @@ void draw_lists(UiState& state) {
     ImGui::End();
 }
 
+void draw_search(UiState& state) {
+    if (!state.show_search) return;
+    ImGui::Begin("Search", &state.show_search);
+    ImGui::TextDisabled("Hex pattern (spaces and 0x prefixes are accepted)");
+    ImGui::SetNextItemWidth(-90.0f);
+    const bool enter = ImGui::InputTextWithHint("##search_pattern", "48 8B ??", state.search_pattern.data(), state.search_pattern.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (ImGui::Button("Find") || enter) run_search(state);
+    ImGui::Separator();
+    ImGui::PushFont(g_code_font);
+    for (std::size_t index = 0; index < state.search_results.size(); ++index) {
+        const auto address = json_string(state.search_results[index], "address");
+        const auto section = json_string(state.search_results[index], "section");
+        const auto file_offset = json_display(state.search_results[index], "file_offset");
+        ImGui::PushID(static_cast<int>(index));
+        if (ImGui::Selectable((address + "  " + section + "  file+" + file_offset).c_str())) {
+            if (const auto parsed = parse_address(address)) navigate(state, *parsed);
+        }
+        ImGui::PopID();
+    }
+    if (state.search_results.empty()) ImGui::TextDisabled("No search results.");
+    ImGui::PopFont();
+    ImGui::End();
+}
+
 void draw_output(UiState& state) {
     if (!state.show_output) return;
     ImGui::Begin("Output", &state.show_output);
@@ -1009,6 +1066,7 @@ void draw_ui(UiState& state) {
     draw_disassembly(state);
     draw_side(state);
     draw_lists(state);
+    draw_search(state);
     draw_output(state);
 }
 
