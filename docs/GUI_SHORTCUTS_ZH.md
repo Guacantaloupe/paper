@@ -14,6 +14,8 @@ Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式
 | CFG | 查看当前函数的基本块和前后继 |
 | Callers / Callees | 查看两层调用者或被调用者 |
 | Imports / Exports | 切换导入表或导出表 |
+| Lists | 打开 Strings、Names、Imports、Exports、Segments、Bookmarks |
+| Search | 搜索十六进制字节模式 |
 | Hex view | 查看当前地址附近的十六进制和 ASCII |
 | AI / MCP | 显示 `paper_ai.exe` 的本地 MCP 配置和推荐调用顺序 |
 
@@ -30,6 +32,7 @@ Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式
 | `Ctrl+Shift+U` / `Ctrl+Shift+D` | Callers / Callees |
 | `Ctrl+I` / `Ctrl+E` | Imports / Exports |
 | `Ctrl+Shift+S` | Strings list |
+| `Ctrl+F` | 打开十六进制字节搜索 |
 | `Shift+F4` | Names list |
 | `Ctrl+B` | 当前地址添加/移除书签 |
 | `Ctrl+S` | 保存 `<image>.paper.json` |
