@@ -764,13 +764,13 @@ Json Analyzer::xrefs_to(const Json& arguments) const {
     const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 500), 50'000);
     Json result = Json::array();
     if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
-        std::unordered_set<Address> seen;
+        std::set<std::pair<Address, Address>> seen;
         for (const auto& value : addresses->array_items()) {
             const auto target = parse_address_value(&value);
             if (!target) continue;
             const auto it = xrefs_to_.find(*target);
             if (it == xrefs_to_.end()) continue;
-            for (const auto& ref : it->second) if (seen.insert(ref.from ^ (ref.to * 0x9e3779b97f4a7c15ULL)).second) {
+            for (const auto& ref : it->second) if (seen.insert({ref.from, ref.to}).second) {
                 result.push_back(xref_json(ref));
                 if (result.array_items().size() >= limit) return result;
             }
@@ -789,13 +789,13 @@ Json Analyzer::xrefs_from(const Json& arguments) const {
     const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 500), 50'000);
     Json result = Json::array();
     if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
-        std::unordered_set<Address> seen;
+        std::set<std::pair<Address, Address>> seen;
         for (const auto& value : addresses->array_items()) {
             const auto source = parse_address_value(&value);
             if (!source) continue;
             const auto it = xrefs_from_.find(*source);
             if (it == xrefs_from_.end()) continue;
-            for (const auto& ref : it->second) if (seen.insert(ref.from ^ (ref.to * 0x9e3779b97f4a7c15ULL)).second) {
+            for (const auto& ref : it->second) if (seen.insert({ref.from, ref.to}).second) {
                 result.push_back(xref_json(ref));
                 if (result.array_items().size() >= limit) return result;
             }
