@@ -1,5 +1,6 @@
 #include "paper/core/rpc.hpp"
 
+#include <fstream>
 #include <iostream>
 
 namespace paper {
@@ -15,6 +16,12 @@ Json schema_number() {
     Json schema = Json::object();
     schema["type"] = "integer";
     schema["minimum"] = 0;
+    return schema;
+}
+
+Json schema_signed_number() {
+    Json schema = Json::object();
+    schema["type"] = "integer";
     return schema;
 }
 
@@ -34,6 +41,10 @@ Json schema_string_array() {
 }
 
 Json tool(std::string_view name, std::string_view description, Json properties, Json required = Json::array()) {
+    // Query results can be persisted directly by the server. Keeping this in
+    // the common schema means every current and future read tool gets the
+    // same `output` escape hatch without another Python wrapper.
+    properties["output"] = schema_string();
     Json item = Json::object();
     item["name"] = name;
     item["description"] = description;
@@ -157,7 +168,7 @@ Json McpServer::handle(const Json& request) {
     bool ok = true;
     if (name_value->as_string() == "open_binary") {
         for (const auto& [key, value] : args.object_items()) {
-            if (key != "path") {
+            if (key != "path" && key != "output") {
                 ok = false;
                 result["error"] = "unknown argument: " + key;
                 break;
@@ -175,6 +186,32 @@ Json McpServer::handle(const Json& request) {
             result["error"] = error.empty() ? "path is required" : error;
         } else {
             result["ok"] = false;
+        }
+        if (ok) {
+            const auto* output_path = args.find("output");
+            if (output_path) {
+                if (!output_path->is_string() || output_path->as_string().empty()) {
+                    ok = false;
+                    result["ok"] = false;
+                    result["error"] = "output must be a non-empty path string";
+                } else {
+                    std::ofstream output(output_path->as_string(), std::ios::binary | std::ios::trunc);
+                    if (!output) {
+                        ok = false;
+                        result["ok"] = false;
+                        result["error"] = "cannot write output: " + output_path->as_string();
+                    } else {
+                        output << result.dump() << '\n';
+                        if (!output.good()) {
+                            ok = false;
+                            result["ok"] = false;
+                            result["error"] = "output write failed: " + output_path->as_string();
+                        } else {
+                            result["output"] = output_path->as_string();
+                        }
+                    }
+                }
+            }
         }
     } else {
         result = analyzer_.call_tool(name_value->as_string(), args, ok);
@@ -236,6 +273,23 @@ Json McpServer::tool_list() const {
         properties["count"] = schema_number();
         tools.push_back(tool("read_bytes", "Read raw bytes from a mapped PE section.", std::move(properties), required_list({"address"})));
     }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        Json layout = Json::object();
+        layout["type"] = "array";
+        Json layout_items = Json::object();
+        layout_items["type"] = "array";
+        layout["items"] = std::move(layout_items);
+        properties["layout"] = std::move(layout);
+        properties["entries_count"] = schema_number();
+        tools.push_back(tool("read_struct", "Read a typed little-endian structure from mapped PE bytes.", std::move(properties), required_list({"address", "layout"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        tools.push_back(tool("describe_address", "Describe section, function, .pdata, string, vtable, import, and xref facts for one address.", std::move(properties), required_list({"address"})));
+    }
     for (const auto name : {"xrefs_to", "xrefs_from"}) {
         Json properties = Json::object();
         properties["address"] = schema_string();
@@ -274,6 +328,12 @@ Json McpServer::tool_list() const {
         properties["address"] = schema_string();
         properties["function_address"] = schema_string();
         properties["limit"] = schema_number();
+        properties["displacement"] = schema_signed_number();
+        properties["immediate_min"] = schema_signed_number();
+        properties["immediate_max"] = schema_signed_number();
+        properties["memory_base"] = schema_string();
+        properties["memory_index"] = schema_string();
+        properties["capture"] = schema_string_array();
         tools.push_back(tool("find_instructions", "Search decoded instructions or contiguous instruction sequences.", std::move(properties)));
     }
     {
@@ -281,6 +341,8 @@ Json McpServer::tool_list() const {
         properties["address"] = schema_string();
         properties["addresses"] = schema_string_array();
         properties["function_address"] = schema_string();
+        properties["all"] = schema_bool();
+        properties["limit"] = schema_number();
         tools.push_back(tool("source_locations", "Recover only proven check/log file, line, and expression locations.", std::move(properties)));
     }
     {
@@ -317,7 +379,8 @@ Json McpServer::tool_list() const {
     {
         Json properties = Json::object();
         properties["address"] = schema_string();
-        tools.push_back(tool("vtable_of", "Find the vtable and slot for a function address.", std::move(properties), required_list({"address"})));
+        properties["addresses"] = schema_string_array();
+        tools.push_back(tool("vtable_of", "Find the vtable and slot for a function address or a batch of functions.", std::move(properties)));
     }
     {
         Json properties = Json::object();
@@ -445,6 +508,12 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["path"] = schema_string();
         tools.push_back(tool(name, name == std::string_view("save_database") ? "Save names, comments, and bookmarks to a Paper sidecar database." : "Load names, comments, and bookmarks from a Paper sidecar database.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["format"] = schema_string();
+        properties["path"] = schema_string();
+        tools.push_back(tool("decode_asset", "Run a registered deterministic decoder for a proprietary asset format.", std::move(properties), required_list({"format", "path"})));
     }
     tools.push_back(tool("analysis_stats", "Return analysis time, worker count, and index sizes.", Json::object()));
     result["tools"] = std::move(tools);
