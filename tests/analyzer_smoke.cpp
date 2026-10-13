@@ -115,6 +115,11 @@ int main() {
     import_summary_args["summary"] = true;
     const auto import_summary = analyzer.list_imports(import_summary_args);
     assert(import_summary.find("import_count") && import_summary.find("imports"));
+    const auto default_import_summary = analyzer.list_imports(paper::Json::object());
+    assert(default_import_summary.find("note") || default_import_summary.find("import_count"));
+    paper::Json legacy_import_args = paper::Json::object();
+    legacy_import_args["summary"] = false;
+    assert(analyzer.list_imports(legacy_import_args).is_array());
     paper::Json batch = paper::Json::object();
     batch["addresses"] = paper::Json::array();
     batch["addresses"].push_back("0x140001000");
