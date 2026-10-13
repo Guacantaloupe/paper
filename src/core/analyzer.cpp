@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <numeric>
@@ -79,18 +80,34 @@ std::optional<Address> parse_address_value(const Json* value) {
     return result;
 }
 
-bool has_only_keys(const Json& arguments, std::initializer_list<std::string_view> allowed, std::string& error) {
-    if (!arguments.is_object()) {
-        error = "arguments must be an object";
-        return false;
+std::optional<std::int64_t> parse_signed_value(const Json* value) {
+    if (!value) return std::nullopt;
+    if (value->is_number()) return static_cast<std::int64_t>(value->as_number());
+    if (!value->is_string()) return std::nullopt;
+    const auto text = value->as_string();
+    if (text.empty()) return std::nullopt;
+    bool negative = false;
+    std::size_t offset = 0;
+    if (text.front() == '-' || text.front() == '+') {
+        negative = text.front() == '-';
+        offset = 1;
     }
-    for (const auto& [key, value] : arguments.object_items()) {
-        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
-            error = "unknown argument: " + key;
-            return false;
-        }
+    if (offset >= text.size()) return std::nullopt;
+    int base = 10;
+    if (text.size() >= offset + 2 && text[offset] == '0' && (text[offset + 1] == 'x' || text[offset + 1] == 'X')) {
+        base = 16;
+        offset += 2;
     }
-    return true;
+    std::uint64_t unsigned_value = 0;
+    const auto parsed = std::from_chars(text.data() + offset, text.data() + text.size(), unsigned_value, base);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return std::nullopt;
+    if (negative) {
+        if (unsigned_value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL) return std::nullopt;
+        if (unsigned_value == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL) return std::numeric_limits<std::int64_t>::min();
+        return -static_cast<std::int64_t>(unsigned_value);
+    }
+    if (unsigned_value > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) return std::nullopt;
+    return static_cast<std::int64_t>(unsigned_value);
 }
 
 Json bytes_json(const Instruction& instruction) {
@@ -940,6 +957,8 @@ Json Analyzer::list_vtables(const Json& arguments) const {
         item["installers"] = std::move(installers);
         const auto installer_count = static_cast<std::size_t>(refs == xrefs_to_.end() ? 0 : std::count_if(refs->second.begin(), refs->second.end(), [](const Xref& ref) { return ref.kind == XrefKind::Data; }));
         item["installer_count"] = static_cast<std::uint64_t>(installer_count);
+        item["suspicious"] = installer_count == 0;
+        if (installer_count == 0) item["suspicious_reason"] = "no_installers";
         item["boundary_proven"] = installer_count >= 2;
         item["boundary_evidence"] = installer_count >= 2 ? "two_or_more_installers" : "run_terminated_without_two_installers";
         if (const auto rtti = rtti_by_vtable.find(table.start); rtti != rtti_by_vtable.end()) {
@@ -956,6 +975,18 @@ Json Analyzer::list_vtables(const Json& arguments) const {
 }
 
 Json Analyzer::vtable_of(const Json& arguments) const {
+    if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
+        Json result = Json::array();
+        for (const auto& value : addresses->array_items()) {
+            Json one = Json::object();
+            one["address"] = value;
+            Json item = Json::object();
+            item["address"] = value;
+            item["matches"] = vtable_of(one);
+            result.push_back(std::move(item));
+        }
+        return result;
+    }
     std::shared_lock lock(mutex_);
     const auto address = argument_address(arguments, "address");
     Json result = Json::array();
@@ -1969,6 +2000,256 @@ Json Analyzer::read_bytes(const Json& arguments) const {
     return result;
 }
 
+Json Analyzer::read_struct(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    Json result = Json::object();
+    const auto address = argument_address(arguments, "address");
+    const auto* layout_value = arguments.find("layout");
+    if (!address || !layout_value || !layout_value->is_array()) {
+        result["error"] = "address and layout array are required";
+        return result;
+    }
+    const auto* start_section = section_at(address);
+    if (!start_section || address < start_section->start || address - start_section->start >= start_section->bytes.size()) {
+        result["error"] = "address is not backed by a mapped PE section";
+        return result;
+    }
+    const auto read_raw = [&](Address at, std::size_t width) -> std::optional<std::vector<std::uint8_t>> {
+        const auto* section = section_at(at);
+        if (!section || section != start_section || at < section->start) return std::nullopt;
+        const auto offset = static_cast<std::size_t>(at - section->start);
+        if (offset > section->bytes.size() || width > section->bytes.size() - offset) return std::nullopt;
+        return std::vector<std::uint8_t>(section->bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                                         section->bytes.begin() + static_cast<std::ptrdiff_t>(offset + width));
+    };
+    const auto read_unsigned = [&](Address at, std::size_t width) -> std::optional<std::uint64_t> {
+        const auto bytes = read_raw(at, width);
+        if (!bytes || width > sizeof(std::uint64_t)) return std::nullopt;
+        std::uint64_t value = 0;
+        for (std::size_t index = 0; index < width; ++index) value |= static_cast<std::uint64_t>((*bytes)[index]) << (index * 8);
+        return value;
+    };
+    const auto parse_count = [&](const Json* value) -> std::optional<std::size_t> {
+        if (!value || !value->is_number() || value->as_number() < 0) return std::nullopt;
+        const auto count = static_cast<std::size_t>(value->as_number());
+        if (count > 1'000'000) return std::nullopt;
+        return count;
+    };
+    const auto global_count = parse_count(arguments.find("entries_count"));
+    Json fields = Json::object();
+    std::size_t cursor = 0;
+    std::size_t field_count = 0;
+    for (const auto& entry : layout_value->array_items()) {
+        if (!entry.is_array() || entry.array_items().size() < 2 || entry.array_items().size() > 3 ||
+            !entry.array_items()[0].is_string() || !entry.array_items()[1].is_string()) {
+            result["error"] = "layout entries must be [type, name] or [type, name, count]";
+            return result;
+        }
+        std::string type = lower(entry.array_items()[0].as_string());
+        const auto name = entry.array_items()[1].as_string();
+        std::optional<std::size_t> count = entry.array_items().size() == 3 ? parse_count(&entry.array_items()[2]) : std::nullopt;
+        bool array = false;
+        if (type.size() > 2 && type.substr(type.size() - 2) == "[]") {
+            array = true;
+            type.resize(type.size() - 2);
+            if (!count) count = global_count;
+            if (!count) {
+                result["error"] = "array field requires entries_count or a third count value: " + name;
+                return result;
+            }
+        }
+        std::size_t width = 0;
+        enum class Kind { Unsigned, Signed, Pointer, Bytes, Ascii, Utf16, FourCc } kind = Kind::Unsigned;
+        if (type == "u8") width = 1;
+        else if (type == "u16") width = 2;
+        else if (type == "u32") width = 4;
+        else if (type == "u64") width = 8;
+        else if (type == "i8") { width = 1; kind = Kind::Signed; }
+        else if (type == "i16") { width = 2; kind = Kind::Signed; }
+        else if (type == "i32") { width = 4; kind = Kind::Signed; }
+        else if (type == "i64") { width = 8; kind = Kind::Signed; }
+        else if (type == "ptr" || type == "pointer" || type == "address" || type == "va") {
+            width = image_.info().pe32_plus ? 8 : 4;
+            kind = Kind::Pointer;
+        } else if (type == "fourcc" || type == "tag") {
+            width = 4;
+            kind = Kind::FourCc;
+        } else if (type.rfind("bytes[", 0) == 0 && type.back() == ']') {
+            const auto number = type.substr(6, type.size() - 7);
+            std::uint64_t parsed = 0;
+            const auto conversion = std::from_chars(number.data(), number.data() + number.size(), parsed, 10);
+            if (conversion.ec != std::errc{} || conversion.ptr != number.data() + number.size() || parsed > 1'000'000) {
+                result["error"] = "invalid bytes[N] field: " + name;
+                return result;
+            }
+            width = static_cast<std::size_t>(parsed);
+            kind = Kind::Bytes;
+        } else if (type.rfind("ascii[", 0) == 0 && type.back() == ']') {
+            const auto number = type.substr(6, type.size() - 7);
+            std::uint64_t parsed = 0;
+            const auto conversion = std::from_chars(number.data(), number.data() + number.size(), parsed, 10);
+            if (conversion.ec != std::errc{} || conversion.ptr != number.data() + number.size() || parsed > 1'000'000) {
+                result["error"] = "invalid ascii[N] field: " + name;
+                return result;
+            }
+            width = static_cast<std::size_t>(parsed);
+            kind = Kind::Ascii;
+        } else if (type.rfind("utf16[", 0) == 0 && type.back() == ']') {
+            const auto number = type.substr(6, type.size() - 7);
+            std::uint64_t parsed = 0;
+            const auto conversion = std::from_chars(number.data(), number.data() + number.size(), parsed, 10);
+            if (conversion.ec != std::errc{} || conversion.ptr != number.data() + number.size() || parsed > 500'000) {
+                result["error"] = "invalid utf16[N] field: " + name;
+                return result;
+            }
+            width = static_cast<std::size_t>(parsed) * 2;
+            kind = Kind::Utf16;
+        } else {
+            result["error"] = "unsupported layout type: " + type;
+            return result;
+        }
+        const auto repetitions = array ? *count : 1;
+        if (repetitions != 0 && width > (std::numeric_limits<std::size_t>::max() / repetitions)) {
+            result["error"] = "layout size overflow: " + name;
+            return result;
+        }
+        Json values = Json::array();
+        for (std::size_t item_index = 0; item_index < repetitions; ++item_index) {
+            const auto item_address = address + cursor;
+            const auto bytes = read_raw(item_address, width);
+            if (!bytes) {
+                result["error"] = "layout reads beyond mapped bytes at field: " + name;
+                return result;
+            }
+            Json value;
+            if (kind == Kind::Bytes) {
+                Json byte_values = Json::array();
+                for (const auto byte : *bytes) byte_values.push_back(static_cast<std::uint64_t>(byte));
+                value = std::move(byte_values);
+            } else if (kind == Kind::Ascii || kind == Kind::Utf16 || kind == Kind::FourCc ||
+                       (kind == Kind::Unsigned && type == "u32" && name == "tag" && !array)) {
+                std::string text;
+                if (kind == Kind::Utf16) {
+                    for (std::size_t byte = 0; byte + 1 < bytes->size(); byte += 2) {
+                        const auto codepoint = static_cast<std::uint16_t>((*bytes)[byte]) |
+                                               (static_cast<std::uint16_t>((*bytes)[byte + 1]) << 8);
+                        if (codepoint == 0) break;
+                        text.push_back(codepoint <= 0x7f ? static_cast<char>(codepoint) : '?');
+                    }
+                } else {
+                    for (const auto byte : *bytes) {
+                        if (byte == 0) break;
+                        text.push_back((byte >= 0x20 && byte <= 0x7e) ? static_cast<char>(byte) : '?');
+                    }
+                }
+                if (kind == Kind::FourCc || (type == "u32" && name == "tag")) {
+                    bool printable = bytes->size() == 4;
+                    for (const auto byte : *bytes) printable = printable && byte >= 0x20 && byte <= 0x7e;
+                    if (!printable) {
+                        const auto numeric = read_unsigned(item_address, width).value_or(0);
+                        value = numeric;
+                    } else {
+                        value = text;
+                    }
+                } else {
+                    value = text;
+                }
+            } else if (kind == Kind::Pointer) {
+                value = address_json(read_unsigned(item_address, width).value_or(0));
+            } else if (kind == Kind::Signed) {
+                const auto raw = read_unsigned(item_address, width).value_or(0);
+                std::int64_t signed_value = 0;
+                if (width == 1) signed_value = static_cast<std::int8_t>(raw);
+                else if (width == 2) signed_value = static_cast<std::int16_t>(raw);
+                else if (width == 4) signed_value = static_cast<std::int32_t>(raw);
+                else signed_value = static_cast<std::int64_t>(raw);
+                value = signed_value;
+            } else {
+                value = read_unsigned(item_address, width).value_or(0);
+                if (array && type == "u64") value = address_json(read_unsigned(item_address, width).value_or(0));
+            }
+            if (array) values.push_back(std::move(value));
+            else fields[name] = std::move(value);
+            cursor += width;
+        }
+        if (array) fields[name] = std::move(values);
+        ++field_count;
+    }
+    result["address"] = address_json(address);
+    result["section"] = start_section->name;
+    result["bytes_read"] = static_cast<std::uint64_t>(cursor);
+    result["field_count"] = static_cast<std::uint64_t>(field_count);
+    result["proven_only"] = true;
+    for (const auto& [name, value] : fields.object_items()) result[name] = value;
+    result["fields"] = std::move(fields);
+    return result;
+}
+
+Json Analyzer::describe_address(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto address = argument_address(arguments, "address");
+    Json result = Json::object();
+    result["address"] = address_json(address);
+    const auto* section = section_at(address);
+    result["section"] = section ? Json(section->name) : Json(nullptr);
+    result["is_string"] = false;
+    result["is_vtable_slot"] = false;
+    result["is_import_thunk"] = false;
+    result["vtable"] = Json(nullptr);
+    result["slot"] = Json(nullptr);
+    result["function"] = Json(nullptr);
+    result["pdata"] = Json(nullptr);
+    result["xrefs_to"] = static_cast<std::uint64_t>(xrefs_to_.contains(address) ? xrefs_to_.at(address).size() : 0);
+    result["xrefs_from"] = static_cast<std::uint64_t>(xrefs_from_.contains(address) ? xrefs_from_.at(address).size() : 0);
+    for (const auto& literal : strings_) {
+        if (literal.address != address) continue;
+        result["is_string"] = true;
+        result["string"] = literal.value;
+        break;
+    }
+    if (const auto* function = function_at(address)) {
+        Json item = Json::object();
+        item["start"] = address_json(function->start);
+        item["end"] = address_json(function->end);
+        item["name"] = function->name;
+        result["function"] = std::move(item);
+    }
+    for (const auto& runtime : image_.runtime_functions()) {
+        if (address < runtime.start || address >= runtime.end) continue;
+        Json item = Json::object();
+        item["start"] = address_json(runtime.start);
+        item["end"] = address_json(runtime.end);
+        item["unwind"] = address_json(runtime.unwind);
+        if (runtime.exception_handler) item["exception_handler"] = address_json(runtime.exception_handler);
+        result["pdata"] = std::move(item);
+        break;
+    }
+    for (const auto& import : image_.imports()) {
+        if (import.thunk != address) continue;
+        result["is_import_thunk"] = true;
+        Json item = Json::object();
+        item["library"] = import.library;
+        item["name"] = import.name;
+        item["thunk"] = address_json(import.thunk);
+        result["import"] = std::move(item);
+        break;
+    }
+    if (const auto* instruction = instruction_at(address)) result["instruction"] = instruction_json(*instruction);
+    for (const auto& table : discover_vtables()) {
+        for (std::size_t index = 0; index < table.slots.size(); ++index) {
+            if (table.slots[index] != address) continue;
+            result["is_vtable_slot"] = true;
+            result["vtable"] = address_json(table.start);
+            result["slot"] = static_cast<std::uint64_t>(index);
+            result["vtable_end"] = address_json(table.end);
+            break;
+        }
+        if (result.find("is_vtable_slot") && result.find("is_vtable_slot")->as_bool()) break;
+    }
+    result["proven_only"] = true;
+    return result;
+}
+
 Json Analyzer::xrefs_to(const Json& arguments) const {
     std::shared_lock lock(mutex_);
     const auto address = argument_address(arguments, "address");
@@ -2118,6 +2399,9 @@ Json Analyzer::find_instructions(const Json& arguments) const {
     }
     const auto address_filter = argument_address(arguments, "address");
     const auto function_filter = argument_address(arguments, "function_address");
+    const auto displacement_filter = parse_signed_value(arguments.find("displacement"));
+    const auto immediate_min = parse_signed_value(arguments.find("immediate_min"));
+    const auto immediate_max = parse_signed_value(arguments.find("immediate_max"));
 
     auto trim = [](std::string value) {
         const auto first = value.find_first_not_of(" \t\r\n");
@@ -2139,6 +2423,30 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         if (value.size() > 2 && value.front() == 'r' && value.back() == 'w') return value.substr(0, value.size() - 1);
         if (value.size() > 2 && value.front() == 'r' && value.back() == 'b') return value.substr(0, value.size() - 1);
         return value;
+    };
+    const auto requested_memory_base = arguments.find("memory_base") && arguments.find("memory_base")->is_string()
+        ? canonical_register(arguments.find("memory_base")->as_string()) : std::string{};
+    const auto requested_memory_index = arguments.find("memory_index") && arguments.find("memory_index")->is_string()
+        ? canonical_register(arguments.find("memory_index")->as_string()) : std::string{};
+    std::vector<std::string> captures;
+    if (const auto* capture = arguments.find("capture"); capture && capture->is_string()) captures.push_back(lower(capture->as_string()));
+    if (const auto* capture = arguments.find("capture"); capture && capture->is_array()) {
+        for (const auto& item : capture->array_items()) if (item.is_string()) captures.push_back(lower(item.as_string()));
+    }
+    const auto capture_enabled = [&](std::string_view name) {
+        return captures.empty() || std::find(captures.begin(), captures.end(), name) != captures.end();
+    };
+    const auto passes_predicates = [&](const Instruction& instruction) {
+        if (displacement_filter && instruction.memory_displacement != *displacement_filter) return false;
+        if (immediate_min || immediate_max) {
+            if (!instruction.immediate) return false;
+            const auto immediate = static_cast<std::int64_t>(*instruction.immediate);
+            if (immediate_min && immediate < *immediate_min) return false;
+            if (immediate_max && immediate > *immediate_max) return false;
+        }
+        if (!requested_memory_base.empty() && canonical_register(instruction.memory_base) != requested_memory_base) return false;
+        if (!requested_memory_index.empty() && canonical_register(instruction.memory_index) != requested_memory_index) return false;
+        return true;
     };
     auto match = [&](const Instruction& instruction, std::string_view requested) {
         const auto text = lower(trim(std::string(requested)));
@@ -2173,13 +2481,18 @@ Json Analyzer::find_instructions(const Json& arguments) const {
     auto append_match = [&](const Instruction& instruction) -> std::optional<Json> {
         if (address_filter && instruction.address != address_filter) return std::nullopt;
         if (!target_filter.empty() && (!instruction.target || !target_filter.contains(*instruction.target))) return std::nullopt;
+        if (!passes_predicates(instruction)) return std::nullopt;
         const auto* function = function_at(instruction.address);
         if (function_filter && (!function || function->start != function_filter)) return std::nullopt;
         Json item = Json::object();
         item["address"] = address_json(instruction.address);
         item["instruction"] = instruction_json(instruction);
-        if (!instruction.destination_register.empty()) item["register"] = instruction.destination_register;
-        if (instruction.target) item["target"] = address_json(*instruction.target);
+        if (capture_enabled("register") && !instruction.destination_register.empty()) item["register"] = instruction.destination_register;
+        if (capture_enabled("target") && instruction.target) item["target"] = address_json(*instruction.target);
+        if (capture_enabled("displacement")) item["displacement"] = instruction.memory_displacement;
+        if (capture_enabled("immediate") && instruction.immediate) item["immediate"] = address_json(*instruction.immediate);
+        if (capture_enabled("memory_base") && !instruction.memory_base.empty()) item["memory_base"] = instruction.memory_base;
+        if (capture_enabled("memory_index") && !instruction.memory_index.empty()) item["memory_index"] = instruction.memory_index;
         if (function) {
             Json owner = Json::object();
             owner["start"] = address_json(function->start);
@@ -2221,7 +2534,9 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         bool matched = true;
         Address expected_address = instructions_[index].address;
         for (std::size_t offset = 0; offset < sequence.size(); ++offset) {
-            if (instructions_[index + offset].address != expected_address || !match(instructions_[index + offset], sequence[offset])) {
+            if (instructions_[index + offset].address != expected_address ||
+                !match(instructions_[index + offset], sequence[offset]) ||
+                !passes_predicates(instructions_[index + offset])) {
                 matched = false;
                 break;
             }
@@ -2247,6 +2562,8 @@ Json Analyzer::source_locations(const Json& arguments) const {
     std::shared_lock lock(mutex_);
     std::vector<const Function*> functions;
     std::unordered_set<Address> seen_functions;
+    const bool all = arguments.find("all") && arguments.find("all")->as_bool();
+    const auto result_limit = std::min<std::size_t>(argument_size(arguments, "limit", 100'000), 1'000'000);
     auto add_address = [&](Address address) {
         if (!address) return;
         if (const auto* function = function_at(address)) {
@@ -2259,7 +2576,10 @@ Json Analyzer::source_locations(const Json& arguments) const {
             }
         }
     };
-    if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
+    if (all) {
+        functions.reserve(functions_.size());
+        for (const auto& function : functions_) functions.push_back(&function);
+    } else if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
         for (const auto& value : addresses->array_items()) if (const auto address = parse_address_value(&value)) add_address(*address);
     } else if (const auto address = argument_address(arguments, "address")) add_address(address);
     else if (const auto address = argument_address(arguments, "function_address")) add_address(address);
@@ -2342,6 +2662,7 @@ Json Analyzer::source_locations(const Json& arguments) const {
             if (expression) location["expression"] = *expression;
             location["site"] = address_json(it->address);
             location["macro"] = macro;
+            if (all) location["function"] = address_json(function->start);
             locations.push_back(std::move(location));
             for (const auto& register_name : {std::string("rcx"), std::string("rdx"), std::string("r8"), std::string("r9")}) {
                 string_registers.erase(register_name);
@@ -2353,7 +2674,23 @@ Json Analyzer::source_locations(const Json& arguments) const {
 
     Json result = Json::object();
     result["proven_only"] = true;
-    if (functions.size() == 1) {
+    if (all) {
+        Json all_locations = Json::array();
+        std::size_t total_locations = 0;
+        for (const auto* function : functions) {
+            const auto locations = scan_function(function);
+            total_locations += locations.array_items().size();
+            for (const auto& location : locations.array_items()) {
+                if (all_locations.array_items().size() >= result_limit) break;
+                all_locations.push_back(location);
+            }
+        }
+        result["all"] = true;
+        result["function_count"] = static_cast<std::uint64_t>(functions.size());
+        result["location_count"] = static_cast<std::uint64_t>(total_locations);
+        result["returned_locations"] = static_cast<std::uint64_t>(all_locations.array_items().size());
+        result["locations"] = std::move(all_locations);
+    } else if (functions.size() == 1) {
         result["function"] = address_json(functions.front()->start);
         result["locations"] = scan_function(functions.front());
     } else {
@@ -2831,12 +3168,88 @@ Json Analyzer::analysis_stats() const {
     return result;
 }
 
+bool Analyzer::register_asset_decoder(std::string format, AssetDecoder decoder, std::string& error) {
+    format = lower(std::move(format));
+    if (format.empty()) {
+        error = "asset decoder format is required";
+        return false;
+    }
+    if (!decoder) {
+        error = "asset decoder callback is empty";
+        return false;
+    }
+    std::unique_lock lock(mutex_);
+    asset_decoders_[std::move(format)] = std::move(decoder);
+    return true;
+}
+
+Json Analyzer::decode_asset(const Json& arguments) const {
+    const auto format = arguments.find("format") ? lower(arguments.find("format")->string_or("")) : std::string{};
+    const auto path = arguments.find("path") ? arguments.find("path")->string_or("") : std::string{};
+    Json result = Json::object();
+    if (format.empty() || path.empty()) {
+        result["error"] = "format and path are required";
+        return result;
+    }
+    AssetDecoder decoder;
+    std::vector<std::string> available;
+    {
+        std::shared_lock lock(mutex_);
+        const auto it = asset_decoders_.find(format);
+        if (it != asset_decoders_.end()) decoder = it->second;
+        available.reserve(asset_decoders_.size());
+        for (const auto& [name, callback] : asset_decoders_) available.push_back(name);
+    }
+    if (!decoder) {
+        result["error"] = "no asset decoder registered for format: " + format;
+        Json formats = Json::array();
+        std::sort(available.begin(), available.end());
+        for (const auto& name : available) formats.push_back(name);
+        result["available_formats"] = std::move(formats);
+        return result;
+    }
+    try {
+        result["format"] = format;
+        result["path"] = path;
+        result["source"] = "registered_asset_decoder";
+        result["proven_only"] = true;
+        result["decoded"] = decoder(format, path);
+    } catch (const std::exception& exception) {
+        result = Json::object();
+        result["error"] = std::string("asset decoder failed: ") + exception.what();
+        result["format"] = format;
+        result["path"] = path;
+    } catch (...) {
+        result = Json::object();
+        result["error"] = "asset decoder failed with an unknown exception";
+        result["format"] = format;
+        result["path"] = path;
+    }
+    return result;
+}
+
 Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok) {
     ok = true;
     std::string argument_error;
     Json validation_error = Json::object();
     auto reject_unknown = [&](std::initializer_list<std::string_view> allowed) -> bool {
-        if (has_only_keys(arguments, allowed, argument_error)) return false;
+        if (!arguments.is_object()) {
+            argument_error = "arguments must be an object";
+        } else {
+            bool valid = true;
+            for (const auto& [key, value] : arguments.object_items()) {
+                // Every read/query tool accepts output as a transport-level
+                // option. It is intentionally not passed to the analyzer
+                // method's semantic parser.
+                if (key == "output") continue;
+                if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
+                    argument_error = "unknown argument: " + key;
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) return false;
+        }
         ok = false;
         validation_error["error"] = argument_error;
         return true;
@@ -2847,6 +3260,10 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
         if (reject_unknown({"offset", "limit", "query"})) return validation_error;
     } else if (name == "get_function") {
         if (reject_unknown({"address", "addresses", "name"})) return validation_error;
+    } else if (name == "read_struct" || name == "describe_address") {
+        if (name == "read_struct") {
+            if (reject_unknown({"address", "layout", "entries_count"})) return validation_error;
+        } else if (reject_unknown({"address"})) return validation_error;
     } else if (name == "disassemble" || name == "read_bytes") {
         if (name == "disassemble") {
             if (reject_unknown({"address", "addresses", "count"})) return validation_error;
@@ -2858,9 +3275,9 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
     } else if (name == "search_strings" || name == "list_strings") {
         if (reject_unknown({"query", "min_length", "offset", "limit", "referenced_only"})) return validation_error;
     } else if (name == "find_instructions") {
-        if (reject_unknown({"pattern", "sequence", "target_in", "address", "function_address", "limit"})) return validation_error;
+        if (reject_unknown({"pattern", "sequence", "target_in", "address", "function_address", "limit", "displacement", "immediate_min", "immediate_max", "memory_base", "memory_index", "capture"})) return validation_error;
     } else if (name == "source_locations") {
-        if (reject_unknown({"address", "addresses", "function_address"})) return validation_error;
+        if (reject_unknown({"address", "addresses", "function_address", "all", "limit"})) return validation_error;
     } else if (name == "search_bytes") {
         if (reject_unknown({"pattern", "limit"})) return validation_error;
     } else if (name == "list_imports" || name == "list_exports") {
@@ -2876,7 +3293,7 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
     } else if (name == "vtable_of" || name == "function_strings") {
         if (name == "function_strings") {
             if (reject_unknown({"address", "addresses"})) return validation_error;
-        } else if (reject_unknown({"address"})) return validation_error;
+        } else if (reject_unknown({"address", "addresses"})) return validation_error;
     } else if (name == "list_runtime_functions") {
         if (reject_unknown({"offset", "limit"})) return validation_error;
     } else if (name == "list_switches" || name == "stack_variables" || name == "function_dataflow") {
@@ -2911,57 +3328,97 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
         if (reject_unknown({"address", "enabled", "comment"})) return validation_error;
     } else if (name == "save_database" || name == "load_database") {
         if (reject_unknown({"path"})) return validation_error;
+    } else if (name == "decode_asset") {
+        if (reject_unknown({"format", "path"})) return validation_error;
     }
-    if (name == "module_info") return module_info();
-    if (name == "list_sections") return list_sections();
-    if (name == "list_segments") return list_segments();
-    if (name == "list_functions") return list_functions(arguments);
-    if (name == "get_function") return get_function(arguments);
-    if (name == "disassemble") return disassemble(arguments);
-    if (name == "read_bytes") return read_bytes(arguments);
-    if (name == "xrefs_to") return xrefs_to(arguments);
-    if (name == "xrefs_from") return xrefs_from(arguments);
-    if (name == "cfg") return cfg(arguments);
-    if (name == "search_strings") return search_strings(arguments);
-    if (name == "list_strings") return list_strings(arguments);
-    if (name == "find_instructions") return find_instructions(arguments);
-    if (name == "source_locations") return source_locations(arguments);
-    if (name == "search_bytes") return search_bytes(arguments);
-    if (name == "list_imports") return list_imports(arguments);
-    if (name == "list_exports") return list_exports(arguments);
-    if (name == "list_names") return list_names(arguments);
-    if (name == "list_bookmarks") return list_bookmarks(arguments);
-    if (name == "list_vtables") return list_vtables(arguments);
-    if (name == "vtable_of") return vtable_of(arguments);
-    if (name == "function_strings") return function_strings(arguments);
-    if (name == "list_runtime_functions") return list_runtime_functions(arguments);
-    if (name == "list_switches") return list_switches(arguments);
-    if (name == "stack_variables") return stack_variables(arguments);
-    if (name == "function_dataflow") return function_dataflow(arguments);
-    if (name == "function_signature") return function_signature(arguments);
-    if (name == "object_fields") return object_fields(arguments);
-    if (name == "function_xrefs") return function_xrefs(arguments);
-    if (name == "analyze_function") return analyze_function(arguments);
-    if (name == "list_noreturn_functions") return list_noreturn_functions(arguments);
-    if (name == "list_rtti") return list_rtti(arguments);
-    if (name == "list_exceptions") return list_exceptions(arguments);
-    if (name == "list_tls_callbacks") return list_tls_callbacks(arguments);
-    if (name == "list_relocations") return list_relocations(arguments);
-    if (name == "list_resources") return list_resources(arguments);
-    if (name == "pdb_info") return pdb_info(arguments);
-    if (name == "load_symbols") return load_symbols(arguments);
-    if (name == "list_symbols") return list_symbols(arguments);
-    if (name == "call_graph") return call_graph(arguments);
-    if (name == "analysis_stats") return analysis_stats();
-    if (name == "set_name") return set_name(arguments);
-    if (name == "set_comment") return set_comment(arguments);
-    if (name == "set_bookmark") return set_bookmark(arguments);
-    if (name == "save_database") return save_database(arguments);
-    if (name == "load_database") return load_database(arguments);
-    ok = false;
-    Json error = Json::object();
-    error["error"] = "unknown tool: " + std::string(name);
-    return error;
+
+    auto emit = [&](Json value) {
+        const auto* output_value = arguments.find("output");
+        if (!output_value) return value;
+        if (!output_value->is_string() || output_value->as_string().empty()) {
+            ok = false;
+            Json error = Json::object();
+            error["error"] = "output must be a non-empty path string";
+            return error;
+        }
+        const auto path = output_value->as_string();
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            ok = false;
+            Json error = Json::object();
+            error["error"] = "cannot write output: " + path;
+            return error;
+        }
+        output << value.dump() << '\n';
+        if (!output.good()) {
+            ok = false;
+            Json error = Json::object();
+            error["error"] = "output write failed: " + path;
+            return error;
+        }
+        Json envelope = Json::object();
+        envelope["ok"] = true;
+        envelope["output"] = path;
+        envelope["result"] = std::move(value);
+        return envelope;
+    };
+
+    auto dispatch = [&]() -> Json {
+        if (name == "module_info") return module_info();
+        if (name == "list_sections") return list_sections();
+        if (name == "list_segments") return list_segments();
+        if (name == "list_functions") return list_functions(arguments);
+        if (name == "get_function") return get_function(arguments);
+        if (name == "disassemble") return disassemble(arguments);
+        if (name == "read_bytes") return read_bytes(arguments);
+        if (name == "read_struct") return read_struct(arguments);
+        if (name == "describe_address") return describe_address(arguments);
+        if (name == "xrefs_to") return xrefs_to(arguments);
+        if (name == "xrefs_from") return xrefs_from(arguments);
+        if (name == "cfg") return cfg(arguments);
+        if (name == "search_strings") return search_strings(arguments);
+        if (name == "list_strings") return list_strings(arguments);
+        if (name == "find_instructions") return find_instructions(arguments);
+        if (name == "source_locations") return source_locations(arguments);
+        if (name == "search_bytes") return search_bytes(arguments);
+        if (name == "list_imports") return list_imports(arguments);
+        if (name == "list_exports") return list_exports(arguments);
+        if (name == "list_names") return list_names(arguments);
+        if (name == "list_bookmarks") return list_bookmarks(arguments);
+        if (name == "list_vtables") return list_vtables(arguments);
+        if (name == "vtable_of") return vtable_of(arguments);
+        if (name == "function_strings") return function_strings(arguments);
+        if (name == "list_runtime_functions") return list_runtime_functions(arguments);
+        if (name == "list_switches") return list_switches(arguments);
+        if (name == "stack_variables") return stack_variables(arguments);
+        if (name == "function_dataflow") return function_dataflow(arguments);
+        if (name == "function_signature") return function_signature(arguments);
+        if (name == "object_fields") return object_fields(arguments);
+        if (name == "function_xrefs") return function_xrefs(arguments);
+        if (name == "analyze_function") return analyze_function(arguments);
+        if (name == "list_noreturn_functions") return list_noreturn_functions(arguments);
+        if (name == "list_rtti") return list_rtti(arguments);
+        if (name == "list_exceptions") return list_exceptions(arguments);
+        if (name == "list_tls_callbacks") return list_tls_callbacks(arguments);
+        if (name == "list_relocations") return list_relocations(arguments);
+        if (name == "list_resources") return list_resources(arguments);
+        if (name == "pdb_info") return pdb_info(arguments);
+        if (name == "load_symbols") return load_symbols(arguments);
+        if (name == "list_symbols") return list_symbols(arguments);
+        if (name == "call_graph") return call_graph(arguments);
+        if (name == "analysis_stats") return analysis_stats();
+        if (name == "set_name") return set_name(arguments);
+        if (name == "set_comment") return set_comment(arguments);
+        if (name == "set_bookmark") return set_bookmark(arguments);
+        if (name == "save_database") return save_database(arguments);
+        if (name == "load_database") return load_database(arguments);
+        if (name == "decode_asset") return decode_asset(arguments);
+        ok = false;
+        Json error = Json::object();
+        error["error"] = "unknown tool: " + std::string(name);
+        return error;
+    };
+    return emit(dispatch());
 }
 
 } // namespace paper
