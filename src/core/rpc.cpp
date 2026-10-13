@@ -26,6 +26,7 @@ Json tool(std::string_view name, std::string_view description, Json properties, 
     input["type"] = "object";
     input["properties"] = std::move(properties);
     input["required"] = std::move(required);
+    input["additionalProperties"] = false;
     item["inputSchema"] = std::move(input);
     return item;
 }
@@ -34,6 +35,18 @@ Json required_list(std::initializer_list<std::string_view> names) {
     Json result = Json::array();
     for (const auto name : names) result.push_back(std::string(name));
     return result;
+}
+
+bool valid_request_id(const Json& value) {
+    return value.is_null() || value.is_string() || value.is_number();
+}
+
+Json rpc_result(const Json& id, Json result) {
+    Json response = Json::object();
+    response["jsonrpc"] = "2.0";
+    response["id"] = id;
+    response["result"] = std::move(result);
+    return response;
 }
 
 } // namespace
@@ -55,43 +68,74 @@ void McpServer::run(std::istream& input, std::ostream& output) {
 }
 
 Json McpServer::handle(const Json& request) {
+    if (!request.is_object()) return error_response(Json(nullptr), -32600, "JSON-RPC request must be an object");
+
     const Json* id = request.find("id");
     const Json request_id = id ? *id : Json(nullptr);
+    const bool notification = id == nullptr;
+    if (id && !valid_request_id(*id)) return error_response(Json(nullptr), -32600, "invalid JSON-RPC id");
+
+    const auto* version = request.find("jsonrpc");
+    if (!version || !version->is_string() || version->as_string() != "2.0") {
+        if (notification) return Json(nullptr);
+        return error_response(request_id, -32600, "jsonrpc must be \"2.0\"");
+    }
+
     const auto* method_value = request.find("method");
-    if (!method_value || !method_value->is_string()) return error_response(request_id, -32600, "missing JSON-RPC method");
+    if (!method_value || !method_value->is_string()) {
+        if (notification) return Json(nullptr);
+        return error_response(request_id, -32600, "missing JSON-RPC method");
+    }
     const auto method = method_value->as_string();
-    if (method.rfind("notifications/", 0) == 0) return Json(nullptr);
 
     if (method == "initialize") {
+        initialized_ = true;
         Json result = Json::object();
         result["protocolVersion"] = "2024-11-05";
         Json capabilities = Json::object();
-        capabilities["tools"] = Json::object();
+        Json tools_capability = Json::object();
+        tools_capability["listChanged"] = false;
+        capabilities["tools"] = std::move(tools_capability);
         result["capabilities"] = std::move(capabilities);
         Json server_info = Json::object();
         server_info["name"] = "paper-ai";
         server_info["version"] = "0.2.0";
         result["serverInfo"] = std::move(server_info);
-        Json response = Json::object();
-        response["jsonrpc"] = "2.0";
-        response["id"] = request_id;
-        response["result"] = std::move(result);
-        return response;
+        result["instructions"] = "Use tools/call with open_binary before querying the Paper analysis indexes.";
+        return notification ? Json(nullptr) : rpc_result(request_id, std::move(result));
+    }
+    if (method == "notifications/initialized") {
+        initialized_ = true;
+        return Json(nullptr);
+    }
+    if (method == "ping") {
+        return notification ? Json(nullptr) : rpc_result(request_id, Json::object());
     }
     if (method == "tools/list") {
-        Json response = Json::object();
-        response["jsonrpc"] = "2.0";
-        response["id"] = request_id;
-        response["result"] = tool_list();
-        return response;
+        if (!initialized_) return notification ? Json(nullptr) : error_response(request_id, -32002, "server is not initialized");
+        return notification ? Json(nullptr) : rpc_result(request_id, tool_list());
     }
-    if (method != "tools/call") return error_response(request_id, -32601, "method not found");
+    if (method != "tools/call") {
+        if (notification) return Json(nullptr);
+        return error_response(request_id, -32601, "method not found");
+    }
+    if (!initialized_) return notification ? Json(nullptr) : error_response(request_id, -32002, "server is not initialized");
 
     const auto* params = request.find("params");
-    if (!params || !params->is_object()) return error_response(request_id, -32602, "tools/call requires params");
+    if (!params || !params->is_object()) {
+        if (notification) return Json(nullptr);
+        return error_response(request_id, -32602, "tools/call requires an object params value");
+    }
     const auto* name_value = params->find("name");
     const auto* arguments = params->find("arguments");
-    if (!name_value || !name_value->is_string()) return error_response(request_id, -32602, "tools/call requires a tool name");
+    if (!name_value || !name_value->is_string()) {
+        if (notification) return Json(nullptr);
+        return error_response(request_id, -32602, "tools/call requires a tool name");
+    }
+    if (arguments && !arguments->is_object()) {
+        if (notification) return Json(nullptr);
+        return error_response(request_id, -32602, "tools/call arguments must be an object");
+    }
     const Json empty_arguments = Json::object();
     const Json& args = arguments ? *arguments : empty_arguments;
     Json result = Json::object();
@@ -119,14 +163,15 @@ Json McpServer::handle(const Json& request) {
     content.push_back(std::move(content_item));
     Json tool_result = Json::object();
     tool_result["content"] = std::move(content);
-    tool_result["structuredContent"] = result;
+    // MCP structuredContent is an object. Keep the complete analyzer value
+    // under a stable key while content[0].text remains convenient for clients
+    // that only implement the textual part of the protocol.
+    Json structured = Json::object();
+    structured["result"] = result;
+    tool_result["structuredContent"] = std::move(structured);
     if (!ok) tool_result["isError"] = true;
 
-    Json response = Json::object();
-    response["jsonrpc"] = "2.0";
-    response["id"] = request_id;
-    response["result"] = std::move(tool_result);
-    return response;
+    return notification ? Json(nullptr) : rpc_result(request_id, std::move(tool_result));
 }
 
 Json McpServer::tool_list() const {
