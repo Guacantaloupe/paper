@@ -29,29 +29,31 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 2. `module_info()`、`list_sections()`/`list_segments()`：确认架构、镜像基址、入口点和可执行区间。
 3. `list_exports()`、`list_imports()`：先利用已有符号确定模块边界和 API 角色。
 4. `list_functions()`：获取函数地址、名称、范围和基本块数量。
-5. `disassemble({"address":"0x...","count":80})`：读取局部指令。
-6. `xrefs_to({"address":"0x..."})`：查找调用者、跳转来源和 RIP 相对数据引用。
+5. `disassemble({"address":"0x...","count":80})`：读取局部指令；多个函数可一次传 `addresses:[...]`。
+6. `xrefs_to({"address":"0x..."})`：查找调用者、跳转来源和 RIP 相对数据引用；每项同时给出解码指令、寄存器、位移和所属函数。
 7. `xrefs_from({"address":"0x..."})`：查找当前指令产生的调用、跳转或数据引用。
 8. `cfg({"function_address":"0x..."})`：获取基本块和前后继关系。
 9. `call_graph({"function_address":"0x...","direction":"callees","depth":2})`：扩展到调用图。
-10. `search_strings()`、`list_strings()`、`search_bytes()`：用文本或字节模式定位辅助证据。
+10. `search_strings()`、`list_strings()`、`search_bytes()`：用文本或字节模式定位辅助证据；字符串项带 `referenced_by`，可用 `referenced_only:true` 和 `offset` 分页。
 11. `list_names()`、`list_bookmarks()`：查看当前数据库中的函数/导入/导出/用户命名和标记。
 12. `list_vtables()`、`vtable_of()`：枚举只读数据中的函数指针表，并把虚函数地址映射到表槽位。
-13. `function_strings()`：列出单个函数直接引用的字符串。
-14. `list_runtime_functions()`：导出 x64 PE `.pdata` 的运行时函数范围。
-15. `list_switches({"function_address":"0x..."})`：恢复有直接指针证据的 `jmp [index*8+table]` 跳转表和 case 目标。
-16. `stack_variables({"function_address":"0x..."})`：按已追踪的 RSP/RBP 相对访问列出栈槽，不猜变量类型。
-17. `function_dataflow({"function_address":"0x..."})`：执行有限的直线常量传播和间接调用目标解析。
-18. `function_signature({"function_address":"0x..."})`：只返回架构/ABI 寄存器和已证明的栈槽，不猜 C/C++ 类型。
-19. `object_fields({"function_address":"0x..."})`：列出以 ABI 参数寄存器为基址的精确内存偏移和读写证据。
-20. `function_xrefs({"function_address":"0x..."})`：一次取得函数出入向 xrefs 和字符串引用。
-21. `analyze_function({"function_address":"0x..."})`：单函数快速总入口，组合 CFG、数据流、栈槽、签名、字段、xrefs、字符串和跳表。
-22. `list_noreturn_functions()`：列出由已知终止 API、可传播包装函数或明确陷阱证明为 noreturn 的函数。
-23. `list_rtti()`：从已确认的虚表前置 Complete Object Locator 读取 MSVC RTTI 类名、基类数组和方法槽位。
-24. `list_exceptions()`、`list_tls_callbacks()`、`list_relocations()`、`list_resources()`：读取 PE 异常/展开信息（含已验证的 MSVC FuncInfo）、TLS 回调、基址重定位和资源叶节点。
-25. `pdb_info()`、`load_symbols()`、`list_symbols()`：读取嵌入 CodeView 身份；Windows 下可通过 DbgHelp 加载可用 PDB 符号。
-26. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
-27. `save_database({"path":"..."})`、`load_database()`：保存或恢复数据库；保存路径可以指向用户可写目录，不必写回 Program Files。
+13. `find_instructions({"pattern":"lea {reg},[rip+{disp}]","target_in":["0x..."]})`：按解码后的指令形式或 `sequence:[...]` 查询，不必手写机器码扫描器。
+14. `source_locations({"address":"0x..."})`：从已验证的 check/log 参数序列恢复文件、行号和表达式。
+15. `function_strings()`：列出单个函数直接引用的字符串，也接受 `addresses` 批量查询。
+16. `list_runtime_functions()`：导出 x64 PE `.pdata` 的运行时函数范围。
+17. `list_switches({"function_address":"0x..."})`：恢复有直接指针证据的 `jmp [index*8+table]` 跳转表和 case 目标；结果按函数缓存。
+18. `stack_variables({"function_address":"0x..."})`：按已追踪的 RSP/RBP 相对访问列出栈槽，不猜变量类型。
+19. `function_dataflow({"function_address":"0x..."})`：执行有限的直线常量传播和间接调用目标解析。
+20. `function_signature({"function_address":"0x..."})`：只返回架构/ABI 寄存器和已证明的栈槽，不猜 C/C++ 类型，也接受 `addresses` 批量查询。
+21. `object_fields({"function_address":"0x..."})`：列出以 ABI 参数寄存器为基址的精确内存偏移和读写证据。
+22. `function_xrefs({"function_address":"0x..."})`：一次取得函数出入向 xrefs 和字符串引用。
+23. `analyze_function({"function_address":"0x..."})`：单函数快速总入口，组合 CFG、数据流、栈槽、签名、字段、xrefs、字符串和跳表。
+24. `list_noreturn_functions()`：列出由已知终止 API、可传播包装函数或明确陷阱证明为 noreturn 的函数。
+25. `list_rtti()`：从已确认的虚表前置 Complete Object Locator 读取 MSVC RTTI 类名和基类数组；只有显式 `include_methods:true` 才展开大型方法槽数组。
+26. `list_exceptions()`、`list_tls_callbacks()`、`list_relocations()`、`list_resources()`：读取 PE 异常/展开信息（含已验证的 MSVC FuncInfo）、TLS 回调、基址重定位和资源叶节点。
+27. `pdb_info()`、`load_symbols()`、`list_symbols()`：读取嵌入 CodeView 身份；Windows 下可通过 DbgHelp 加载可用 PDB 符号。
+28. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
+29. `save_database({"path":"..."})`、`load_database()`：保存或恢复数据库；保存路径可以指向用户可写目录，不必写回 Program Files。
 
 ## 经典 xrefs 查询
 
@@ -72,7 +74,7 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 }
 ```
 
-返回值中的每一项都包含 `from`、`to` 和 `kind`。`kind` 可以是 `call`、`jump`、`conditional_jump` 或 `data`。如果地址是导入表槽位，还会附带 `library!symbol`；即使指令是 `call [rip+IAT]`，也会保留为 `call`，不会被误报成普通数据引用。
+返回值中的每一项都包含 `from`、`to`、`kind`、`instruction` 和 `function`。`instruction` 给出助记符、长度、目标寄存器、RIP 相对事实和原始位移；`function` 给出站点所在函数。`kind` 可以是 `call`、`jump`、`conditional_jump` 或 `data`。如果地址是导入表槽位，还会附带 `library!symbol`；即使指令是 `call [rip+IAT]`，也会保留为 `call`，不会被误报成普通数据引用。
 
 ## 工具清单
 
@@ -89,10 +91,12 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `xrefs_to` | 查入向交叉引用 |
 | `xrefs_from` | 查出向交叉引用 |
 | `cfg` | 基本块、后继和前驱 |
-| `search_strings` | ASCII/UTF-16 字符串搜索 |
-| `list_strings` | IDA 风格字符串列表 |
+| `search_strings` | ASCII/UTF-16 字符串搜索、引用计数和分页 |
+| `list_strings` | IDA 风格字符串列表、`referenced_only` |
+| `find_instructions` | 解码后的指令/连续指令模式查询 |
+| `source_locations` | check/log 文件、行号和表达式证据 |
 | `search_bytes` | 十六进制字节模式搜索，支持 `?` 半字节/通配字节 |
-| `list_imports` | 导入 DLL、符号和 IAT 地址 |
+| `list_imports` | 导入 DLL、符号、IAT 和 thunk 来源；`summary:true` 返回 descriptor 事实 |
 | `list_exports` | 导出名称、序号和地址 |
 | `list_names` | 函数、导入、导出和用户名称 |
 | `list_bookmarks` | 持久化地址标记 |
