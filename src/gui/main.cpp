@@ -68,6 +68,7 @@ const char* ui_text(const char* english) {
     if (text == "CFG") return "控制流图";
     if (text == "Callers") return "调用者";
     if (text == "Callees") return "被调用者";
+    if (text == "Single-function analysis") return "单函数分析";
     if (text == "Imports") return "导入";
     if (text == "Exports") return "导出";
     if (text == "Segments") return "段";
@@ -420,6 +421,14 @@ void action_call_graph(UiState& state, std::string direction) {
     set_json_property(state, state.analyzer.call_graph(arguments), label);
 }
 
+void action_function_analysis(UiState& state) {
+    if (!state.has_image || !state.current_address) return;
+    Json arguments = Json::object();
+    arguments["function_address"] = address_text(state.current_address);
+    set_json_property(state, state.analyzer.analyze_function(arguments),
+                      g_ui_language == UiLanguage::Chinese ? "单函数分析已刷新" : "Single-function analysis refreshed");
+}
+
 void action_imports(UiState& state) {
     if (state.has_image) set_json_property(state, state.analyzer.list_imports(Json::object()), g_ui_language == UiLanguage::Chinese ? "导入列表已刷新" : "Imports refreshed");
 }
@@ -669,6 +678,7 @@ void draw_menu(UiState& state) {
         if (ImGui::MenuItem(ui_text("CFG"), "Ctrl+Shift+F")) action_cfg(state);
         if (ImGui::MenuItem(ui_text("Callers"), "Ctrl+Shift+U")) action_call_graph(state, "callers");
         if (ImGui::MenuItem(ui_text("Callees"), "Ctrl+Shift+D")) action_call_graph(state, "callees");
+        if (ImGui::MenuItem(ui_text("Single-function analysis"), "Ctrl+Shift+A", false, state.has_image)) action_function_analysis(state);
         ImGui::Separator();
         if (ImGui::MenuItem(ui_text("Imports"), "Ctrl+I")) action_imports(state);
         if (ImGui::MenuItem(ui_text("Exports"), "Ctrl+E")) action_exports(state);
@@ -715,6 +725,7 @@ void handle_shortcuts(UiState& state) {
     if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_F)) action_search(state);
     if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_U)) action_call_graph(state, "callers");
     if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_D)) action_call_graph(state, "callees");
+    if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_A)) action_function_analysis(state);
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_I)) action_imports(state);
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_E)) action_exports(state);
     if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S)) action_save_database(state);
@@ -1353,4 +1364,3 @@ int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previous_instanc
     UnregisterClassW(window_class.lpszClassName, instance);
     return 0;
 }
-
