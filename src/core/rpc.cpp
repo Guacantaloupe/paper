@@ -18,6 +18,15 @@ Json schema_number() {
     return schema;
 }
 
+Json schema_string_array() {
+    Json schema = Json::object();
+    schema["type"] = "array";
+    Json items = Json::object();
+    items["type"] = "string";
+    schema["items"] = std::move(items);
+    return schema;
+}
+
 Json tool(std::string_view name, std::string_view description, Json properties, Json required = Json::array()) {
     Json item = Json::object();
     item["name"] = name;
@@ -213,8 +222,9 @@ Json McpServer::tool_list() const {
     for (const auto name : {"xrefs_to", "xrefs_from"}) {
         Json properties = Json::object();
         properties["address"] = schema_string();
+        properties["addresses"] = schema_string_array();
         properties["limit"] = schema_number();
-        tools.push_back(tool(name, name == std::string_view("xrefs_to") ? "Return all indexed references into an address." : "Return all indexed references originating at an address.", std::move(properties), required_list({"address"})));
+        tools.push_back(tool(name, name == std::string_view("xrefs_to") ? "Return references into address or addresses." : "Return references originating at address or addresses.", std::move(properties)));
     }
     {
         Json properties = Json::object();
@@ -258,6 +268,28 @@ Json McpServer::tool_list() const {
         properties["offset"] = schema_number();
         properties["limit"] = schema_number();
         tools.push_back(tool("list_bookmarks", "List persistent address bookmarks and their comments.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["query"] = schema_string();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_vtables", "List read-only PE data runs containing four or more executable function pointers.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        tools.push_back(tool("vtable_of", "Find the vtable and slot for a function address.", std::move(properties), required_list({"address"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        tools.push_back(tool("function_strings", "List string literals referenced by instructions in one function.", std::move(properties), required_list({"address"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["offset"] = schema_number();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("list_runtime_functions", "List authoritative x64 PE .pdata runtime function ranges.", std::move(properties)));
     }
     {
         Json properties = Json::object();
