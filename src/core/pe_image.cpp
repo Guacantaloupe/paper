@@ -229,6 +229,10 @@ bool PeImage::parse_imports(std::uint32_t directory_rva, std::uint32_t, std::str
             ImportSymbol symbol;
             symbol.library = library;
             symbol.thunk = info_.image_base + first_thunk + static_cast<Address>(index * thunk_width);
+            symbol.descriptor = info_.image_base + directory_rva + static_cast<Address>(descriptor - *directory);
+            symbol.original_first_thunk = original_thunk;
+            symbol.first_thunk = first_thunk;
+            symbol.names_from_first_thunk = original_thunk == 0;
             symbol.by_ordinal = (value & ordinal_mask) != 0;
             if (symbol.by_ordinal) {
                 symbol.ordinal = static_cast<std::uint16_t>(value & 0xffffu);
