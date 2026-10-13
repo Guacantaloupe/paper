@@ -19,6 +19,8 @@ For broader x86-64 decoding, configure with an installed Zydis CMake package and
 
 The default desktop-only configuration is `PAPER_BUILD_GUI=ON`, `PAPER_BUILD_AI=OFF`, and `PAPER_BUILD_TESTS=OFF`. The only desktop dependency is the Windows SDK's DirectX 11 libraries. If the machine has network access, CMake automatically fetches Dear ImGui; a local copy may be placed in `third_party/imgui` and automatic fetching can be disabled with `PAPER_FETCH_IMGUI=OFF`. Set `PAPER_BUILD_AI=ON` or `PAPER_BUILD_TESTS=ON` only when those extra targets are needed.
 
+For MSVC, keep the standard configuration split: **Debug** uses `/Od` and `/RTC1`, while **Release** uses `/O2` and must not use `/RTC1`. Do not add `/O2` to the Debug property sheet; MSVC rejects `/RTC1` together with `/O2` and will rewrite `/Od` when both are present. A clean CMake configure is recommended after changing configuration properties.
+
 ```text
 PAPER_WITH_ZYDIS=ON
 ```
@@ -50,4 +52,5 @@ Then an AI can request the classic reverse-engineering workflow:
 ```
 
 All query tools read immutable in-memory indexes after analysis, so xrefs, function lookup, CFG, imports, and disassembly do not rescan the binary. `analysis_stats` reports worker count and elapsed analysis time, while `module_info.runtime_function_count` shows how much unwind metadata was available for function recovery.
+
 
