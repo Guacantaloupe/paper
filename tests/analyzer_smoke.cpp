@@ -100,6 +100,14 @@ int main() {
     const auto& ref = refs.array_items().front();
     assert(ref.find("kind") && ref.find("kind")->as_string() == "call");
     assert(ref.find("symbol") && ref.find("symbol")->as_string() == "KERNEL32.dll!ExitProcess");
+    paper::Json noreturn_args = paper::Json::object();
+    noreturn_args["address"] = "0x140001000";
+    const auto function_summary = analyzer.get_function(noreturn_args);
+    assert(function_summary.find("noreturn") && function_summary.find("noreturn")->as_bool());
+    const auto noreturns = analyzer.list_noreturn_functions(paper::Json::object());
+    assert(noreturns.is_array() && !noreturns.array_items().empty());
+    const auto dataflow = analyzer.function_dataflow(noreturn_args);
+    assert(dataflow.find("indirect_targets") && dataflow.find("indirect_targets")->is_array());
     paper::Json search_args = paper::Json::object();
     search_args["pattern"] = "ff ?? 5a";
     assert(analyzer.search_bytes(search_args).array_items().size() == 1);
