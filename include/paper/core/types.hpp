@@ -53,6 +53,7 @@ struct ExportSymbol {
     std::uint32_t ordinal = 0;
     Address address = 0;
     bool forwarded = false;
+    std::string forwarder;
 };
 
 // PE exception/unwind metadata gives a strong function boundary on x64.
@@ -61,6 +62,42 @@ struct RuntimeFunction {
     Address start = 0;
     Address end = 0;
     Address unwind = 0;
+    std::uint8_t unwind_flags = 0;
+    std::uint8_t unwind_code_count = 0;
+    Address exception_handler = 0;
+};
+
+struct TlsCallback {
+    Address address = 0;
+};
+
+struct RelocationEntry {
+    Address address = 0;
+    std::uint32_t page_rva = 0;
+    std::uint16_t type = 0;
+};
+
+struct ResourceEntry {
+    std::string type;
+    std::string name;
+    std::string language;
+    std::uint32_t data_rva = 0;
+    std::uint32_t size = 0;
+    std::uint32_t codepage = 0;
+};
+
+struct PdbInfo {
+    bool present = false;
+    std::uint32_t debug_type = 0;
+    std::string path;
+    std::string guid;
+    std::uint32_t age = 0;
+};
+
+struct DebugSymbol {
+    Address address = 0;
+    std::uint64_t size = 0;
+    std::string name;
 };
 
 struct Instruction {
@@ -74,6 +111,18 @@ struct Instruction {
     std::optional<Address> target;
     bool target_indirect = false;
     bool rip_relative = false;
+    // Structured operand facts used by the bounded data-flow and stack
+    // queries. Empty fields mean that the compact decoder could not prove
+    // the operand form; callers must not infer a type from them.
+    std::string destination_register;
+    std::string source_register;
+    std::string memory_base;
+    std::string memory_index;
+    std::uint8_t memory_scale = 1;
+    std::int64_t memory_displacement = 0;
+    bool memory_read = false;
+    bool memory_write = false;
+    std::optional<std::uint64_t> immediate;
 };
 
 struct Xref {
@@ -119,6 +168,7 @@ struct ModuleInfo {
     std::uint32_t entry_rva = 0;
     std::uint32_t image_size = 0;
     bool pe32_plus = false;
+    PdbInfo pdb;
 };
 
 inline std::string_view to_string(InstructionKind kind) {
