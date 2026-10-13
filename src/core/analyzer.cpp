@@ -64,6 +64,20 @@ std::optional<Address> parse_address_value(const Json* value) {
     return result;
 }
 
+bool has_only_keys(const Json& arguments, std::initializer_list<std::string_view> allowed, std::string& error) {
+    if (!arguments.is_object()) {
+        error = "arguments must be an object";
+        return false;
+    }
+    for (const auto& [key, value] : arguments.object_items()) {
+        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
+            error = "unknown argument: " + key;
+            return false;
+        }
+    }
+    return true;
+}
+
 Json bytes_json(const Instruction& instruction) {
     std::ostringstream out;
     out << std::hex << std::setfill('0');
@@ -550,6 +564,120 @@ Json Analyzer::list_segments() const {
     return list_sections();
 }
 
+std::vector<Analyzer::VtableRecord> Analyzer::discover_vtables() const {
+    std::vector<VtableRecord> tables;
+    const std::size_t pointer_size = image_.info().pe32_plus ? 8 : 4;
+    for (const auto& section : image_.sections()) {
+        if (!section.readable || section.writable || section.executable || section.bytes.size() < pointer_size * 4) continue;
+        std::size_t offset = 0;
+        while (offset + pointer_size * 4 <= section.bytes.size()) {
+            auto read_pointer = [&](std::size_t at) -> Address {
+                Address value = 0;
+                for (std::size_t byte = 0; byte < pointer_size; ++byte)
+                    value |= static_cast<Address>(section.bytes[at + byte]) << (byte * 8);
+                return value;
+            };
+            const auto points_to_code = [&](Address address) {
+                const auto* target_section = image_.section_for_address(address);
+                return target_section && target_section->executable && instruction_index_.contains(address);
+            };
+            if (!points_to_code(read_pointer(offset))) { ++offset; continue; }
+            const std::size_t run_start = offset;
+            std::vector<Address> pointers;
+            while (offset + pointer_size <= section.bytes.size() && points_to_code(read_pointer(offset))) {
+                pointers.push_back(read_pointer(offset));
+                offset += pointer_size;
+            }
+            if (pointers.size() < 4) continue;
+
+            std::size_t table_start = 0;
+            for (std::size_t index = 1; index <= pointers.size(); ++index) {
+                const bool split = index == pointers.size() || [&] {
+                    const Address candidate = section.start + run_start + index * pointer_size;
+                    const auto refs = xrefs_to_.find(candidate);
+                    if (refs == xrefs_to_.end()) return false;
+                    return std::any_of(refs->second.begin(), refs->second.end(), [](const Xref& ref) {
+                        return ref.kind == XrefKind::Data;
+                    });
+                }();
+                if (!split) continue;
+                if (index - table_start >= 4) {
+                    VtableRecord table;
+                    table.start = section.start + run_start + table_start * pointer_size;
+                    table.end = table.start + (index - table_start) * pointer_size;
+                    table.slots.assign(pointers.begin() + static_cast<std::ptrdiff_t>(table_start),
+                                       pointers.begin() + static_cast<std::ptrdiff_t>(index));
+                    tables.push_back(std::move(table));
+                }
+                table_start = index;
+            }
+        }
+    }
+    return tables;
+}
+
+Json Analyzer::list_vtables(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 50'000);
+    const auto query = arguments.find("query") ? arguments.find("query")->string_or("") : "";
+    Json result = Json::array();
+    for (const auto& table : discover_vtables()) {
+        const auto refs = xrefs_to_.find(table.start);
+        Json item = Json::object();
+        item["start"] = address_json(table.start);
+        item["end"] = address_json(table.end);
+        item["count"] = static_cast<std::uint64_t>(table.slots.size());
+        item["section"] = image_.section_for_address(table.start) ? image_.section_for_address(table.start)->name : "";
+        Json slots = Json::array();
+        for (const auto slot : table.slots) slots.push_back(address_json(slot));
+        item["slots"] = std::move(slots);
+        Json installers = Json::array();
+        if (refs != xrefs_to_.end()) for (const auto& ref : refs->second) if (ref.kind == XrefKind::Data) installers.push_back(xref_json(ref));
+        item["installers"] = std::move(installers);
+        if (!query.empty() && item.dump().find(query) == std::string::npos) continue;
+        result.push_back(std::move(item));
+        if (result.array_items().size() >= limit) break;
+    }
+    return result;
+}
+
+Json Analyzer::vtable_of(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto address = argument_address(arguments, "address");
+    Json result = Json::array();
+    if (!address) return result;
+    for (const auto& table : discover_vtables()) {
+        for (std::size_t index = 0; index < table.slots.size(); ++index) {
+            if (table.slots[index] != address) continue;
+            Json item = Json::object();
+            item["vtable"] = address_json(table.start);
+            item["end"] = address_json(table.end);
+            item["slot"] = static_cast<std::uint64_t>(index);
+            item["function"] = address_json(address);
+            result.push_back(std::move(item));
+        }
+    }
+    return result;
+}
+
+Json Analyzer::list_runtime_functions(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto offset = argument_size(arguments, "offset", 0);
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 100'000);
+    Json result = Json::array();
+    std::size_t skipped = 0;
+    for (const auto& runtime : image_.runtime_functions()) {
+        if (skipped++ < offset) continue;
+        if (result.array_items().size() >= limit) break;
+        Json item = Json::object();
+        item["start"] = address_json(runtime.start);
+        item["end"] = address_json(runtime.end);
+        item["unwind"] = address_json(runtime.unwind);
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
 Json Analyzer::list_functions(const Json& arguments) const {
     std::shared_lock lock(mutex_);
     const auto offset = argument_size(arguments, "offset", 0);
@@ -635,6 +763,20 @@ Json Analyzer::xrefs_to(const Json& arguments) const {
     const auto address = argument_address(arguments, "address");
     const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 500), 50'000);
     Json result = Json::array();
+    if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
+        std::unordered_set<Address> seen;
+        for (const auto& value : addresses->array_items()) {
+            const auto target = parse_address_value(&value);
+            if (!target) continue;
+            const auto it = xrefs_to_.find(*target);
+            if (it == xrefs_to_.end()) continue;
+            for (const auto& ref : it->second) if (seen.insert(ref.from ^ (ref.to * 0x9e3779b97f4a7c15ULL)).second) {
+                result.push_back(xref_json(ref));
+                if (result.array_items().size() >= limit) return result;
+            }
+        }
+        return result;
+    }
     const auto it = xrefs_to_.find(address);
     if (it == xrefs_to_.end()) return result;
     for (std::size_t i = 0; i < it->second.size() && i < limit; ++i) result.push_back(xref_json(it->second[i]));
@@ -646,6 +788,36 @@ Json Analyzer::xrefs_from(const Json& arguments) const {
     const auto address = argument_address(arguments, "address");
     const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 500), 50'000);
     Json result = Json::array();
+    if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
+        std::unordered_set<Address> seen;
+        for (const auto& value : addresses->array_items()) {
+            const auto source = parse_address_value(&value);
+            if (!source) continue;
+            const auto it = xrefs_from_.find(*source);
+            if (it == xrefs_from_.end()) continue;
+            for (const auto& ref : it->second) if (seen.insert(ref.from ^ (ref.to * 0x9e3779b97f4a7c15ULL)).second) {
+                result.push_back(xref_json(ref));
+                if (result.array_items().size() >= limit) return result;
+            }
+        }
+        return result;
+    }
+    if (const auto* function = function_at(address); function && function->start == address) {
+        std::unordered_set<Address> seen;
+        const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function->start,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function->end,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        for (auto instruction = begin; instruction != end; ++instruction) {
+            const auto refs = xrefs_from_.find(instruction->address);
+            if (refs == xrefs_from_.end()) continue;
+            for (const auto& ref : refs->second) if (seen.insert(ref.to).second) {
+                result.push_back(xref_json(ref));
+                if (result.array_items().size() >= limit) return result;
+            }
+        }
+        return result;
+    }
     const auto it = xrefs_from_.find(address);
     if (it == xrefs_from_.end()) return result;
     for (std::size_t i = 0; i < it->second.size() && i < limit; ++i) result.push_back(xref_json(it->second[i]));
@@ -709,6 +881,32 @@ Json Analyzer::list_strings(const Json& arguments) const {
     // Keep both spellings: search_strings is the MCP-friendly action while
     // list_strings is the IDA-style view name used by the GUI.
     return search_strings(arguments);
+}
+
+Json Analyzer::function_strings(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto address = argument_address(arguments, "address");
+    const auto* function = function_at(address);
+    Json result = Json::array();
+    if (!function) return result;
+    std::unordered_set<Address> seen;
+    const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function->start,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function->end,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    for (auto instruction = begin; instruction != end; ++instruction) {
+        if (!instruction->target || !seen.insert(*instruction->target).second) continue;
+        const auto string = std::find_if(strings_.begin(), strings_.end(), [&](const StringLiteral& literal) {
+            return literal.address == *instruction->target;
+        });
+        if (string == strings_.end()) continue;
+        Json item = Json::object();
+        item["address"] = address_json(string->address);
+        item["value"] = string->value;
+        item["reference"] = address_json(instruction->address);
+        result.push_back(std::move(item));
+    }
+    return result;
 }
 
 Json Analyzer::search_bytes(const Json& arguments) const {
@@ -1104,6 +1302,53 @@ Json Analyzer::analysis_stats() const {
 
 Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok) {
     ok = true;
+    std::string argument_error;
+    Json validation_error = Json::object();
+    auto reject_unknown = [&](std::initializer_list<std::string_view> allowed) -> bool {
+        if (has_only_keys(arguments, allowed, argument_error)) return false;
+        ok = false;
+        validation_error["error"] = argument_error;
+        return true;
+    };
+    if (name == "module_info" || name == "list_sections" || name == "list_segments" || name == "analysis_stats") {
+        if (reject_unknown({})) return validation_error;
+    } else if (name == "list_functions") {
+        if (reject_unknown({"offset", "limit", "query"})) return validation_error;
+    } else if (name == "get_function") {
+        if (reject_unknown({"address", "name"})) return validation_error;
+    } else if (name == "disassemble" || name == "read_bytes") {
+        if (reject_unknown({"address", "count"})) return validation_error;
+    } else if (name == "xrefs_to" || name == "xrefs_from") {
+        if (reject_unknown({"address", "addresses", "limit"})) return validation_error;
+    } else if (name == "cfg") {
+        if (reject_unknown({"function_address"})) return validation_error;
+    } else if (name == "search_strings" || name == "list_strings") {
+        if (reject_unknown({"query", "min_length", "limit"})) return validation_error;
+    } else if (name == "search_bytes") {
+        if (reject_unknown({"pattern", "limit"})) return validation_error;
+    } else if (name == "list_imports" || name == "list_exports") {
+        if (reject_unknown({"query"})) return validation_error;
+    } else if (name == "list_names") {
+        if (reject_unknown({"query", "offset", "limit"})) return validation_error;
+    } else if (name == "list_bookmarks") {
+        if (reject_unknown({"offset", "limit", "query"})) return validation_error;
+    } else if (name == "list_vtables") {
+        if (reject_unknown({"query", "limit"})) return validation_error;
+    } else if (name == "vtable_of" || name == "function_strings") {
+        if (reject_unknown({"address"})) return validation_error;
+    } else if (name == "list_runtime_functions") {
+        if (reject_unknown({"offset", "limit"})) return validation_error;
+    } else if (name == "call_graph") {
+        if (reject_unknown({"function_address", "direction", "depth"})) return validation_error;
+    } else if (name == "set_name") {
+        if (reject_unknown({"address", "name"})) return validation_error;
+    } else if (name == "set_comment") {
+        if (reject_unknown({"address", "comment"})) return validation_error;
+    } else if (name == "set_bookmark") {
+        if (reject_unknown({"address", "enabled", "comment"})) return validation_error;
+    } else if (name == "save_database" || name == "load_database") {
+        if (reject_unknown({"path"})) return validation_error;
+    }
     if (name == "module_info") return module_info();
     if (name == "list_sections") return list_sections();
     if (name == "list_segments") return list_segments();
@@ -1121,6 +1366,10 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
     if (name == "list_exports") return list_exports(arguments);
     if (name == "list_names") return list_names(arguments);
     if (name == "list_bookmarks") return list_bookmarks(arguments);
+    if (name == "list_vtables") return list_vtables(arguments);
+    if (name == "vtable_of") return vtable_of(arguments);
+    if (name == "function_strings") return function_strings(arguments);
+    if (name == "list_runtime_functions") return list_runtime_functions(arguments);
     if (name == "call_graph") return call_graph(arguments);
     if (name == "analysis_stats") return analysis_stats();
     if (name == "set_name") return set_name(arguments);
