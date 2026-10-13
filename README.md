@@ -2,7 +2,7 @@
 
 Paper is a fast, local, IDA-style static analysis workbench. The v0.2 core is deliberately split into two parts:
 
-- `paper_core`: PE loading, executable-section disassembly, function discovery, CFG recovery, imports/exports, strings, names, comments, bookmarks, persistent sidecar databases, indexed cross-references, direct-pointer switch tables, bounded stack/data-flow facts, noreturn propagation, MSVC RTTI, x64 unwind metadata, TLS callbacks, relocations, resources, and CodeView/PDB metadata.
+- `paper_core`: PE loading, executable-section disassembly, function discovery, CFG recovery, imports/exports, strings, names, comments, bookmarks, persistent sidecar databases, indexed cross-references, direct and relative jump-table facts, bounded block-local data-flow and indirect-target resolution, stack-frame slots, ABI-only function signatures, register-relative object-field accesses, noreturn propagation, MSVC RTTI/vtable mapping, x64 unwind and language-specific exception data, TLS callbacks, relocations, resources, and CodeView/PDB metadata.
 - `paper_ai`: a line-oriented MCP-compatible stdio server. AI clients can call the same analysis engine through structured tools without scraping a GUI.
 
 The analysis engine does not run a program, perform symbolic execution, call SMT/Z3, or ask a model to guess program facts. AI is an optional caller of the evidence API.
@@ -31,11 +31,11 @@ When enabled, Zydis is used only behind `X86Decoder`; the function, CFG, xref, a
 
 `paper_ai` speaks newline-delimited JSON-RPC with the MCP method names `initialize`, `tools/list`, and `tools/call`. The available tools include:
 
-`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `list_vtables`, `vtable_of`, `function_strings`, `list_runtime_functions`, `list_switches`, `stack_variables`, `function_dataflow`, `list_noreturn_functions`, `list_rtti`, `list_exceptions`, `list_tls_callbacks`, `list_relocations`, `list_resources`, `pdb_info`, `load_symbols`, `list_symbols`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
+`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `list_vtables`, `vtable_of`, `function_strings`, `list_runtime_functions`, `list_switches`, `stack_variables`, `function_dataflow`, `function_signature`, `object_fields`, `function_xrefs`, `analyze_function`, `list_noreturn_functions`, `list_rtti`, `list_exceptions`, `list_tls_callbacks`, `list_relocations`, `list_resources`, `pdb_info`, `load_symbols`, `list_symbols`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
 
 `list_vtables` reports read-only data runs containing executable function pointers together with data references that install the table. `vtable_of` maps a known function address to its table slots. `xrefs_to` and `xrefs_from` accept either one `address` or an `addresses` array; passing a function start to `xrefs_from` aggregates the function's outgoing references. Unknown argument names are rejected instead of silently falling back to a default query.
 
-The recovery queries are evidence-first: direct-pointer jump tables, tracked RSP/RBP slots, constants, indirect targets, noreturn edges, RTTI descriptors, and PE directories are returned only when the bytes or metadata prove them. Relative jump tables, variable types, inheritance, or missing PDB symbols are not filled with confidence guesses.
+The recovery queries are evidence-first: direct/relative jump-table entries, block-local constants and indirect targets, tracked RSP/RBP slots, ABI facts, register-relative memory offsets, noreturn edges, RTTI descriptors, vtable installers, and PE directories are returned only when the bytes or metadata prove them. The single-function `analyze_function` call bundles these fast queries for one address. It does not fabricate C/C++ types, symbolic values, inheritance, or missing PDB signatures; an absent fact is omitted rather than represented as a confidence guess.
 
 An MCP client only needs to register the executable as a local stdio server. The exact executable path depends on the client; no project-specific shell wrapper is required.
 
@@ -52,5 +52,4 @@ Then an AI can request the classic reverse-engineering workflow:
 ```
 
 All query tools read immutable in-memory indexes after analysis, so xrefs, function lookup, CFG, imports, and disassembly do not rescan the binary. `analysis_stats` reports worker count and elapsed analysis time, while `module_info.runtime_function_count` shows how much unwind metadata was available for function recovery.
-
 
