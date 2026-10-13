@@ -100,6 +100,9 @@ int main() {
     const auto& ref = refs.array_items().front();
     assert(ref.find("kind") && ref.find("kind")->as_string() == "call");
     assert(ref.find("symbol") && ref.find("symbol")->as_string() == "KERNEL32.dll!ExitProcess");
+    paper::Json search_args = paper::Json::object();
+    search_args["pattern"] = "ff ?? 5a";
+    assert(analyzer.search_bytes(search_args).array_items().size() == 1);
 
     paper::Json function_args = paper::Json::object();
     function_args["function_address"] = "0x140001000";
