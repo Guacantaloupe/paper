@@ -1142,6 +1142,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         g_swap_chain->Present(1, 0);
     }
 
+    // Keep IDA's familiar session behavior: annotations are restored on the
+    // next open without requiring a separate export step. Ctrl+S remains
+    // available when the user wants an explicit checkpoint.
+    if (state.has_image) state.analyzer.save_database(Json::object());
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
