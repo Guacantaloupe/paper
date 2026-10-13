@@ -310,6 +310,20 @@ bool PeImage::parse_runtime_functions(std::uint32_t directory_rva, std::uint32_t
                 if ((record.unwind_flags & 0x3u) != 0 && range_ok(*unwind_offset + handler_offset, 4, bytes_.size())) {
                     const auto handler_rva = u32(bytes_, *unwind_offset + handler_offset);
                     record.exception_handler = handler_rva ? info_.image_base + handler_rva : 0;
+                    // The language-specific payload starts immediately after
+                    // the handler RVA.  It is deliberately kept bounded and
+                    // file-backed; the analyzer validates any structure
+                    // before presenting fields as MSVC EH facts.
+                    const auto data_rva = static_cast<std::uint64_t>(unwind_rva) + handler_offset + 4;
+                    if (data_rva <= 0xffffffffu) {
+                        const auto data_offset = rva_to_file_offset(static_cast<std::uint32_t>(data_rva));
+                        if (data_offset && *data_offset < bytes_.size()) {
+                            record.handler_data = info_.image_base + data_rva;
+                            const auto count_bytes = std::min<std::size_t>(64, bytes_.size() - *data_offset);
+                            record.handler_data_bytes.assign(bytes_.begin() + static_cast<std::ptrdiff_t>(*data_offset),
+                                                             bytes_.begin() + static_cast<std::ptrdiff_t>(*data_offset + count_bytes));
+                        }
+                    }
                 }
             }
         }
