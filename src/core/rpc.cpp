@@ -18,6 +18,12 @@ Json schema_number() {
     return schema;
 }
 
+Json schema_bool() {
+    Json schema = Json::object();
+    schema["type"] = "boolean";
+    return schema;
+}
+
 Json schema_string_array() {
     Json schema = Json::object();
     schema["type"] = "array";
@@ -213,14 +219,16 @@ Json McpServer::tool_list() const {
     {
         Json properties = Json::object();
         properties["address"] = schema_string();
+        properties["addresses"] = schema_string_array();
         properties["name"] = schema_string();
         tools.push_back(tool("get_function", "Resolve a function by address or exact name.", std::move(properties)));
     }
     {
         Json properties = Json::object();
         properties["address"] = schema_string();
+        properties["addresses"] = schema_string_array();
         properties["count"] = schema_number();
-        tools.push_back(tool("disassemble", "Return decoded instructions beginning at an address.", std::move(properties), required_list({"address"})));
+        tools.push_back(tool("disassemble", "Return decoded instructions beginning at an address or a batch of addresses.", std::move(properties)));
     }
     {
         Json properties = Json::object();
@@ -244,15 +252,35 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["query"] = schema_string();
         properties["min_length"] = schema_number();
+        properties["offset"] = schema_number();
         properties["limit"] = schema_number();
+        properties["referenced_only"] = schema_bool();
         tools.push_back(tool("search_strings", "Search the indexed ASCII and UTF-16 literals.", std::move(properties)));
     }
     {
         Json properties = Json::object();
         properties["query"] = schema_string();
         properties["min_length"] = schema_number();
+        properties["offset"] = schema_number();
         properties["limit"] = schema_number();
+        properties["referenced_only"] = schema_bool();
         tools.push_back(tool("list_strings", "List the indexed string literals for an IDA-style Strings view.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["pattern"] = schema_string();
+        properties["sequence"] = schema_string_array();
+        properties["target_in"] = schema_string_array();
+        properties["address"] = schema_string();
+        properties["function_address"] = schema_string();
+        properties["limit"] = schema_number();
+        tools.push_back(tool("find_instructions", "Search decoded instructions or contiguous instruction sequences.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["address"] = schema_string();
+        properties["addresses"] = schema_string_array();
+        tools.push_back(tool("source_locations", "Recover only proven check/log file, line, and expression locations.", std::move(properties)));
     }
     {
         Json properties = Json::object();
@@ -263,6 +291,7 @@ Json McpServer::tool_list() const {
     for (const auto name : {"list_imports", "list_exports"}) {
         Json properties = Json::object();
         properties["query"] = schema_string();
+        if (name == std::string_view("list_imports")) properties["summary"] = schema_bool();
         tools.push_back(tool(name, name == std::string_view("list_imports") ? "List imported DLL symbols and IAT addresses." : "List exported names, ordinals, and addresses.", std::move(properties)));
     }
     {
@@ -292,7 +321,8 @@ Json McpServer::tool_list() const {
     {
         Json properties = Json::object();
         properties["address"] = schema_string();
-        tools.push_back(tool("function_strings", "List string literals referenced by instructions in one function.", std::move(properties), required_list({"address"})));
+        properties["addresses"] = schema_string_array();
+        tools.push_back(tool("function_strings", "List string literals referenced by one function or a batch of functions.", std::move(properties)));
     }
     {
         Json properties = Json::object();
@@ -304,6 +334,7 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["function_address"] = schema_string();
         properties["address"] = schema_string();
+        properties["limit"] = schema_number();
         tools.push_back(tool("list_switches", "Recover proven direct-pointer jump tables and their executable case targets.", std::move(properties)));
     }
     {
@@ -322,6 +353,7 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["function_address"] = schema_string();
         properties["address"] = schema_string();
+        properties["addresses"] = schema_string_array();
         tools.push_back(tool("function_signature", "Return only ABI facts and exact stack slots for one function; no guessed C/C++ types.", std::move(properties)));
     }
     {
@@ -352,6 +384,7 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["query"] = schema_string();
         properties["limit"] = schema_number();
+        properties["include_methods"] = schema_bool();
         tools.push_back(tool("list_rtti", "Parse verifiable MSVC RTTI descriptors associated with discovered vtables.", std::move(properties)));
     }
     for (const auto name : {"list_exceptions", "list_relocations"}) {
