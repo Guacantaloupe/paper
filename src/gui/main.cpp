@@ -915,6 +915,7 @@ void draw_disassembly(UiState& state) {
     }
     if (ImGui::BeginTabBar("center_views")) {
         if (ImGui::BeginTabItem(ui_text("IDA View-A"), nullptr, state.center_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            std::optional<Address> pending_navigation;
             if (ImGui::BeginTable("disassembly", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                                              ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
                                   ImVec2(0, 0))) {
@@ -930,10 +931,7 @@ void draw_disassembly(UiState& state) {
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
                     if (ImGui::Selectable(address.c_str(), address == address_text(state.current_address), ImGuiSelectableFlags_SpanAllColumns)) {
-                        if (const auto parsed = parse_address(address)) {
-                            state.current_address = *parsed;
-                            refresh_xrefs(state, *parsed);
-                        }
+                        if (const auto parsed = parse_address(address)) pending_navigation = *parsed;
                     }
                     ImGui::TableNextColumn();
                     ImGui::TextDisabled("%s", json_string(instruction, "bytes").c_str());
@@ -954,6 +952,7 @@ void draw_disassembly(UiState& state) {
                 }
                 ImGui::EndTable();
             }
+            if (pending_navigation) navigate(state, *pending_navigation);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem(ui_text("Hex View-1"), nullptr, state.center_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
@@ -985,12 +984,13 @@ void draw_side(UiState& state) {
     ImGui::PushFont(g_code_font);
     if (ImGui::BeginTabBar("side_views")) {
         if (ImGui::BeginTabItem(ui_text("Xrefs"), nullptr, state.side_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            std::optional<Address> pending_navigation;
             for (const auto& reference : state.incoming_xrefs) {
                 const auto from = json_string(reference, "from");
                 const auto symbol = json_string(reference, "symbol");
                 const auto label = "<- " + from + "  " + json_string(reference, "kind") + (symbol.empty() ? "" : "  " + symbol);
                 if (ImGui::Selectable(label.c_str())) {
-                    if (const auto address = parse_address(from)) navigate(state, *address);
+                    if (const auto address = parse_address(from)) pending_navigation = *address;
                 }
             }
             for (const auto& reference : state.outgoing_xrefs) {
@@ -998,10 +998,11 @@ void draw_side(UiState& state) {
                 const auto symbol = json_string(reference, "symbol");
                 const auto label = "-> " + to + "  " + json_string(reference, "kind") + (symbol.empty() ? "" : "  " + symbol);
                 if (ImGui::Selectable(label.c_str())) {
-                    if (const auto address = parse_address(to)) navigate(state, *address);
+                    if (const auto address = parse_address(to)) pending_navigation = *address;
                 }
             }
             if (state.incoming_xrefs.empty() && state.outgoing_xrefs.empty()) ImGui::TextDisabled("%s", ui_text("No indexed xrefs at this address."));
+            if (pending_navigation) navigate(state, *pending_navigation);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem(ui_text("Properties"), nullptr, state.side_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
