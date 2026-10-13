@@ -23,6 +23,10 @@ GUI 的布局模拟经典 IDA 工作区：Functions 导航 dock、IDA View-A/Hex
 
 `paper_ai` 复用这些查询接口，因此 AI 调用和 GUI 点击得到的是同一份证据。`X86Decoder` 可以选择性地接入 Zydis：启用 `PAPER_WITH_ZYDIS=ON` 后，Zydis 负责完整的 x86-64 指令边界、控制流和 RIP 相对操作数格式化；没有安装 Zydis 时仍使用内置回退解码器。两种后端共享同一个 `Instruction` 结构，因此函数、CFG、xref 和 MCP 层不需要分叉。
 
+查询层提供两个减少脚本数量的边界：`read_struct` 在映射节区内按显式 layout 读取整数、指针、固定字符串和数组；`describe_address` 把已经建立的 section/function/string/import/vtable/.pdata/xref 索引组合成一个地址描述。查询结果可通过 RPC 的统一 `output` 参数落盘，写盘发生在 JSON 序列化之后，不会让分析线程持有文件句柄或重新扫描镜像。
+
+自定义资产不放进 PE 核心。宿主可以通过 `Analyzer::register_asset_decoder(format, callback, error)` 注册一个确定性的 C++ 回调，AI 侧调用 `decode_asset` 即可获得该回调的 JSON 结果。回调在共享锁外执行；格式未注册、回调抛异常或字段无法从文件验证时，查询会返回明确错误，而不是伪造通用模型。
+
 函数入口优先合并四类证据：入口点/导出、直接 call 和尾跳转、常见 prologue/CET `ENDBR64`，以及 x64 PE `.pdata` 的 runtime-function 范围。`.pdata` 的范围存在时用于收紧函数终点，减少对齐填充被误收进 CFG 的情况。
 
 RIP 相对间接 call/jump 会先按控制流分类，再按数据引用分类。这样 `call [rip+IAT]` 在 `xrefs_to` 中返回 `kind: "call"`，并附带 `library!symbol`，同时参与 `call_graph` 的间接调用遍历。
