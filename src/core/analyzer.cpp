@@ -229,6 +229,10 @@ bool Analyzer::open_file(const std::string& path, std::string& error) {
         noreturn_targets_.clear();
         noreturn_functions_.clear();
         noreturn_reasons_.clear();
+        vtable_cache_.clear();
+        vtable_cache_valid_ = false;
+        rtti_cache_.clear();
+        rtti_cache_valid_ = false;
         names_.clear();
         comments_.clear();
         bookmarks_.clear();
@@ -260,6 +264,10 @@ void Analyzer::clear() {
     noreturn_targets_.clear();
     noreturn_functions_.clear();
     noreturn_reasons_.clear();
+    vtable_cache_.clear();
+    vtable_cache_valid_ = false;
+    rtti_cache_.clear();
+    rtti_cache_valid_ = false;
     names_.clear();
     comments_.clear();
     bookmarks_.clear();
@@ -376,6 +384,10 @@ void Analyzer::analyze() {
     }
     for (auto& [address, refs] : xrefs_to_) std::sort(refs.begin(), refs.end(), [](const Xref& a, const Xref& b) { return a.from < b.from; });
     for (auto& [address, refs] : xrefs_from_) std::sort(refs.begin(), refs.end(), [](const Xref& a, const Xref& b) { return a.to < b.to; });
+    vtable_cache_ = discover_vtables();
+    vtable_cache_valid_ = true;
+    rtti_cache_ = discover_rtti();
+    rtti_cache_valid_ = true;
     propagate_noreturn();
     build_strings();
 
@@ -722,6 +734,7 @@ Json Analyzer::list_segments() const {
 }
 
 std::vector<Analyzer::VtableRecord> Analyzer::discover_vtables() const {
+    if (vtable_cache_valid_) return vtable_cache_;
     std::vector<VtableRecord> tables;
     const std::size_t pointer_size = image_.info().pe32_plus ? 8 : 4;
     for (const auto& section : image_.sections()) {
@@ -770,6 +783,8 @@ std::vector<Analyzer::VtableRecord> Analyzer::discover_vtables() const {
             }
         }
     }
+    vtable_cache_ = tables;
+    vtable_cache_valid_ = true;
     return tables;
 }
 
@@ -855,6 +870,7 @@ std::vector<Analyzer::SwitchRecord> Analyzer::discover_switches(const Function* 
 }
 
 std::vector<Analyzer::RttiRecord> Analyzer::discover_rtti() const {
+    if (rtti_cache_valid_) return rtti_cache_;
     std::vector<RttiRecord> result;
     const std::size_t pointer_size = image_.info().pe32_plus ? 8 : 4;
     auto read_pointer = [&](Address address) -> std::optional<Address> {
@@ -935,6 +951,8 @@ std::vector<Analyzer::RttiRecord> Analyzer::discover_rtti() const {
         }
         result.push_back(std::move(record));
     }
+    rtti_cache_ = result;
+    rtti_cache_valid_ = true;
     return result;
 }
 
