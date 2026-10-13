@@ -1,6 +1,6 @@
 # Paper GUI：IDA 风格布局与快捷操作
 
-Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式组织：左侧是 Functions 导航，中间是 IDA View-A 反汇编，顶部是深色快捷工具栏，右侧是 Xrefs/Properties，底部是 Output。`Hex View-1` 和 `Info` 是中间的可切换标签，导入、导出和调用图结果显示在 Properties 面板。
+Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式组织：左侧是 Functions 导航，中间是 IDA View-A 反汇编，顶部是深色快捷工具栏，右侧是 Xrefs/Properties 和 IDA Lists，底部是 Output。`Hex View-1` 和 `Info` 是中间的可切换标签。IDA Lists 包含 Strings、Names、Imports、Exports、Segments、Bookmarks。
 
 ## 顶部快捷按钮
 
@@ -29,9 +29,13 @@ Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式
 | `Ctrl+Shift+F` | CFG |
 | `Ctrl+Shift+U` / `Ctrl+Shift+D` | Callers / Callees |
 | `Ctrl+I` / `Ctrl+E` | Imports / Exports |
+| `Ctrl+Shift+S` | Strings list |
+| `Shift+F4` | Names list |
+| `Ctrl+B` | 当前地址添加/移除书签 |
+| `Ctrl+S` | 保存 `<image>.paper.json` |
 | `Ctrl+H` | Hex view |
 | `F1` | AI / MCP 使用方法 |
 
-点击右侧 Xrefs 项会直接跳到引用指令或目标地址；点击中央反汇编行会同步刷新右侧 Xrefs。左侧 Functions 搜索框可以按名称过滤函数。窗口支持 Dear ImGui Docking，可拖动四个面板调整为自己的 IDA 工作区。
+点击右侧 Xrefs 项会直接跳到引用指令或目标地址；点击中央反汇编行会同步刷新右侧 Xrefs。左侧 Functions 搜索框可以按名称过滤函数。Properties 中的 Rename、Comment、Bookmark 会写入与 `paper_ai.exe` 共用的内存数据库，按 `Ctrl+S` 持久化。窗口支持 Dear ImGui Docking，可拖动面板调整为自己的 IDA 工作区。
 
 GUI 只调用 `paper_core` 的静态索引，不执行样本；AI 通过 `paper_ai.exe` 复用同一份证据。
