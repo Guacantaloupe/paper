@@ -22,13 +22,18 @@ private:
         std::uint8_t reg = 0;
         std::uint8_t mod = 0;
         std::uint8_t rm = 0;
+        std::uint8_t base = 0;
+        std::uint8_t index = 0;
+        std::uint8_t scale = 1;
+        bool has_base = false;
+        bool has_index = false;
         bool rip_relative = false;
         std::int32_t displacement = 0;
     };
 
     static bool has_modrm(std::uint8_t opcode, bool two_byte);
     static std::size_t immediate_size(std::uint8_t opcode, bool two_byte, bool rex_w, std::uint8_t modrm_reg);
-    static ModrmInfo parse_modrm(std::span<const std::uint8_t> bytes, std::size_t offset, bool address32);
+    static ModrmInfo parse_modrm(std::span<const std::uint8_t> bytes, std::size_t offset, bool address32, std::uint8_t rex);
     static std::int64_t read_signed(std::span<const std::uint8_t> bytes, std::size_t offset, std::size_t size);
     static std::uint64_t read_unsigned(std::span<const std::uint8_t> bytes, std::size_t offset, std::size_t size);
     static std::string hex_address(Address address);
