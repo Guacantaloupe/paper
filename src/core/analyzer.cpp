@@ -382,6 +382,22 @@ void Analyzer::analyze() {
         xrefs_from_[xref.from].push_back(xref);
         xrefs_to_[xref.to].push_back(xref);
     }
+    // An indexed indirect jump has one data operand (the table address) but
+    // multiple executable case edges. Add those proven edges to the same
+    // xref graph used by call/jump queries so switch dispatch is not a dead
+    // end in the navigation engine.
+    for (const auto& function : functions_) {
+        for (const auto& switch_record : discover_switches(&function)) {
+            for (const auto target : switch_record.targets) {
+                Xref xref;
+                xref.from = switch_record.instruction;
+                xref.to = target;
+                xref.kind = XrefKind::Jump;
+                xrefs_from_[xref.from].push_back(xref);
+                xrefs_to_[xref.to].push_back(xref);
+            }
+        }
+    }
     for (auto& [address, refs] : xrefs_to_) std::sort(refs.begin(), refs.end(), [](const Xref& a, const Xref& b) { return a.from < b.from; });
     for (auto& [address, refs] : xrefs_from_) std::sort(refs.begin(), refs.end(), [](const Xref& a, const Xref& b) { return a.to < b.to; });
     vtable_cache_ = discover_vtables();
@@ -456,6 +472,12 @@ void Analyzer::build_functions_and_cfg(const std::vector<Address>& starts) {
         function.name = function.exported ? export_names[start] : "sub_" + address_string(start).substr(2);
 
         std::vector<Address> block_starts{start};
+        const auto switch_records = discover_switches(&function);
+        for (const auto& switch_record : switch_records) {
+            for (const auto target : switch_record.targets) {
+                if (target >= start && target < end && instruction_index_.contains(target)) block_starts.push_back(target);
+            }
+        }
         const auto begin_it = std::lower_bound(instructions_.begin(), instructions_.end(), start, [](const Instruction& instruction, Address value) { return instruction.address < value; });
         const auto end_it = std::lower_bound(instructions_.begin(), instructions_.end(), end, [](const Instruction& instruction, Address value) { return instruction.address < value; });
         for (auto it = begin_it; it != end_it; ++it) {
@@ -484,6 +506,13 @@ void Analyzer::build_functions_and_cfg(const std::vector<Address>& starts) {
                 if (last->target && *last->target >= start && *last->target < end) block.successors.push_back(*last->target);
                 const auto fallthrough = last->address + last->length;
                 if (fallthrough < end && instruction_index_.contains(fallthrough)) block.successors.push_back(fallthrough);
+            } else if (last->kind == InstructionKind::IndirectJump) {
+                for (const auto& switch_record : switch_records) {
+                    if (switch_record.instruction != last->address) continue;
+                    for (const auto target : switch_record.targets) {
+                        if (target >= start && target < end && instruction_index_.contains(target)) block.successors.push_back(target);
+                    }
+                }
             } else if (last->kind != InstructionKind::Return && last->kind != InstructionKind::IndirectJump &&
                        !((last->kind == InstructionKind::Call || last->kind == InstructionKind::IndirectCall) && last->target && is_noreturn_target(*last->target))) {
                 const auto fallthrough = last->address + last->length;
