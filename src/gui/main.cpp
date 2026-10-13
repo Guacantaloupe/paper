@@ -187,14 +187,17 @@ std::string wide_to_utf8(const wchar_t* text) {
 }
 
 std::string choose_pe_file() {
-    wchar_t path[32768]{};
+    // A MAX_PATH-sized stack buffer is not enough for long Windows paths, and
+    // the old 32768-element local triggered MSVC C6262 (~65 KiB of stack).
+    // Keep the buffer on the heap while retaining the same Win32 API contract.
+    std::vector<wchar_t> path(32768, L'\0');
     OPENFILENAMEW dialog{};
     dialog.lStructSize = sizeof(dialog);
     dialog.lpstrFilter = L"PE images (*.exe;*.dll;*.sys)\0*.exe;*.dll;*.sys\0All files (*.*)\0*.*\0";
-    dialog.lpstrFile = path;
-    dialog.nMaxFile = static_cast<DWORD>(std::size(path));
+    dialog.lpstrFile = path.data();
+    dialog.nMaxFile = static_cast<DWORD>(path.size());
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    return GetOpenFileNameW(&dialog) ? wide_to_utf8(path) : std::string();
+    return GetOpenFileNameW(&dialog) ? wide_to_utf8(path.data()) : std::string();
 }
 
 struct UiState {
@@ -1271,7 +1274,10 @@ LRESULT WINAPI wnd_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_para
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+int WINAPI wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE previous_instance,
+                    _In_ LPWSTR command_line, _In_ int show_command) {
+    (void)previous_instance;
+    (void)command_line;
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW window_class{sizeof(WNDCLASSEXW), CS_CLASSDC, wnd_proc, 0L, 0L, instance, nullptr, nullptr, nullptr, nullptr, L"PaperImGui", nullptr};
     RegisterClassExW(&window_class);
@@ -1347,3 +1353,4 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     UnregisterClassW(window_class.lpszClassName, instance);
     return 0;
 }
+
