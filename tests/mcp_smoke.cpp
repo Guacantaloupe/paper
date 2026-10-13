@@ -36,6 +36,8 @@ int main() {
     }
     assert(response_count == 6);
     assert(output.str().find("unknown argument: pattern") != std::string::npos);
+    assert(output.str().find("list_switches") != std::string::npos);
+    assert(output.str().find("list_rtti") != std::string::npos);
 
     const auto unicode = paper::Json::parse(R"({"text":"\u4e2d\u6587 \ud83d\ude80"})");
     assert(unicode.find("text") && unicode.find("text")->as_string() == "中文 🚀");
