@@ -280,6 +280,7 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["address"] = schema_string();
         properties["addresses"] = schema_string_array();
+        properties["function_address"] = schema_string();
         tools.push_back(tool("source_locations", "Recover only proven check/log file, line, and expression locations.", std::move(properties)));
     }
     {
