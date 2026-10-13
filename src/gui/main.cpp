@@ -39,6 +39,7 @@ IDXGISwapChain* g_swap_chain = nullptr;
 ID3D11RenderTargetView* g_main_render_target = nullptr;
 UINT g_resize_width = 0;
 UINT g_resize_height = 0;
+constexpr float kToolbarHeight = 38.0f;
 
 std::string json_string(const Json& value, std::string_view key) {
     const auto* item = value.find(key);
@@ -309,23 +310,30 @@ ImGuiID paper_dockspace_id() {
     return ImHashStr("PaperDockSpace");
 }
 
+ImVec2 paper_dockspace_pos(const ImGuiViewport* viewport) {
+    return ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + kToolbarHeight);
+}
+
+ImVec2 paper_dockspace_size(const ImGuiViewport* viewport) {
+    return ImVec2(viewport->WorkSize.x, std::max(1.0f, viewport->WorkSize.y - kToolbarHeight));
+}
+
 void build_default_layout() {
     const ImGuiID dockspace = paper_dockspace_id();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 dock_pos = paper_dockspace_pos(viewport);
+    const ImVec2 dock_size = paper_dockspace_size(viewport);
     ImGui::DockBuilderRemoveNode(dockspace);
     ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodePos(dockspace, viewport->WorkPos);
-    ImGui::DockBuilderSetNodeSize(dockspace, viewport->WorkSize);
-    ImGuiID toolbar = 0;
+    ImGui::DockBuilderSetNodePos(dockspace, dock_pos);
+    ImGui::DockBuilderSetNodeSize(dockspace, dock_size);
     ImGuiID left = 0;
     ImGuiID right = 0;
     ImGuiID bottom = 0;
     ImGuiID center = dockspace;
-    ImGui::DockBuilderSplitNode(center, ImGuiDir_Up, 0.055f, &toolbar, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, &left, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, &right, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.22f, &bottom, &center);
-    ImGui::DockBuilderDockWindow("Toolbar", toolbar);
     ImGui::DockBuilderDockWindow("Functions", left);
     ImGui::DockBuilderDockWindow("Xrefs / Properties", right);
     ImGui::DockBuilderDockWindow("Output", bottom);
@@ -402,8 +410,16 @@ void handle_shortcuts(UiState& state) {
 }
 
 void draw_toolbar(UiState& state) {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, kToolbarHeight));
+    ImGui::SetNextWindowViewport(viewport->ID);
     constexpr ImGuiWindowFlags toolbar_flags = ImGuiWindowFlags_NoTitleBar |
                                                 ImGuiWindowFlags_NoCollapse |
+                                                ImGuiWindowFlags_NoResize |
+                                                ImGuiWindowFlags_NoMove |
+                                                ImGuiWindowFlags_NoDocking |
+                                                ImGuiWindowFlags_NoSavedSettings |
                                                 ImGuiWindowFlags_NoScrollbar |
                                                 ImGuiWindowFlags_NoScrollWithMouse;
     if (!ImGui::Begin("Toolbar", nullptr, toolbar_flags)) {
@@ -594,7 +610,22 @@ void draw_ui(UiState& state) {
     handle_shortcuts(state);
     draw_toolbar(state);
     const ImGuiID dockspace = paper_dockspace_id();
-    ImGui::DockSpaceOverViewport(dockspace, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(paper_dockspace_pos(viewport));
+    ImGui::SetNextWindowSize(paper_dockspace_size(viewport));
+    ImGui::SetNextWindowViewport(viewport->ID);
+    constexpr ImGuiWindowFlags host_flags = ImGuiWindowFlags_NoTitleBar |
+                                             ImGuiWindowFlags_NoCollapse |
+                                             ImGuiWindowFlags_NoResize |
+                                             ImGuiWindowFlags_NoMove |
+                                             ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                             ImGuiWindowFlags_NoNavFocus |
+                                             ImGuiWindowFlags_NoDocking |
+                                             ImGuiWindowFlags_NoSavedSettings |
+                                             ImGuiWindowFlags_NoBackground;
+    ImGui::Begin("##PaperDockHost", nullptr, host_flags);
+    ImGui::DockSpace(dockspace, ImVec2(0, 0), ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
     static bool layout_initialized = false;
     if (!layout_initialized) {
         // Always apply the first-run layout once. This also repairs an older
