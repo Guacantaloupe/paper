@@ -74,7 +74,7 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `cfg` | 基本块、后继和前驱 |
 | `search_strings` | ASCII/UTF-16 字符串搜索 |
 | `list_strings` | IDA 风格字符串列表 |
-| `search_bytes` | 十六进制字节模式搜索 |
+| `search_bytes` | 十六进制字节模式搜索，支持 `?` 半字节/通配字节 |
 | `list_imports` | 导入 DLL、符号和 IAT 地址 |
 | `list_exports` | 导出名称、序号和地址 |
 | `list_names` | 函数、导入、导出和用户名称 |
