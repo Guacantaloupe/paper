@@ -131,5 +131,8 @@ if(PAPER_BUILD_TESTS)
     add_executable(paper_analyzer_smoke tests/analyzer_smoke.cpp)
     target_link_libraries(paper_analyzer_smoke PRIVATE paper_core)
     add_test(NAME paper_analyzer_smoke COMMAND paper_analyzer_smoke)
+    add_executable(paper_mcp_smoke tests/mcp_smoke.cpp)
+    target_link_libraries(paper_mcp_smoke PRIVATE paper_core)
+    add_test(NAME paper_mcp_smoke COMMAND paper_mcp_smoke)
 endif()
 
