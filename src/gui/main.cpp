@@ -49,6 +49,11 @@ std::string json_string(const Json& value, std::string_view key) {
 
 std::string json_kind(const Json& value) { return json_string(value, "kind"); }
 
+bool json_bool(const Json& value, std::string_view key, bool fallback = false) {
+    const auto* item = value.find(key);
+    return item ? item->as_bool(fallback) : fallback;
+}
+
 std::string address_text(Address address) {
     char buffer[32]{};
     std::snprintf(buffer, sizeof(buffer), "0x%llX", static_cast<unsigned long long>(address));
@@ -100,9 +105,11 @@ struct UiState {
     bool has_image = false;
     bool show_functions = true;
     bool show_side = true;
+    bool show_lists = true;
     bool show_output = true;
     int side_selection_request = -1;
     int center_selection_request = -1;
+    int list_selection_request = -1;
     int selected_function = -1;
     bool focus_goto = false;
     Address current_address = 0;
@@ -112,11 +119,22 @@ struct UiState {
     std::vector<Json> instructions;
     std::vector<Json> incoming_xrefs;
     std::vector<Json> outgoing_xrefs;
+    std::vector<Json> strings;
+    std::vector<Json> names;
+    std::vector<Json> imports;
+    std::vector<Json> exports;
+    std::vector<Json> sections;
+    std::vector<Json> bookmarks;
     Json properties = Json::object();
+    Json cfg = Json::object();
     std::string hex_text;
     std::string output = "Paper ready — static analysis only, no sample execution.";
     std::string status = "Open an EXE, DLL, or SYS image to begin.";
     std::array<char, 256> function_filter{};
+    std::array<char, 256> list_filter{};
+    std::array<char, 256> name_edit{};
+    std::array<char, 512> comment_edit{};
+    std::array<char, 256> bookmark_edit{};
     std::array<char, 96> goto_address{};
 };
 
@@ -132,6 +150,32 @@ void refresh_functions(UiState& state) {
     const auto result = state.analyzer.list_functions(arguments);
     state.functions.assign(result.array_items().begin(), result.array_items().end());
     state.selected_function = -1;
+}
+
+void refresh_lists(UiState& state) {
+    Json arguments = Json::object();
+    arguments["limit"] = 50'000;
+    if (state.list_filter[0] != '\0') arguments["query"] = std::string(state.list_filter.data());
+    const auto strings = state.analyzer.list_strings(arguments);
+    const auto names = state.analyzer.list_names(arguments);
+    const auto imports = state.analyzer.list_imports(arguments);
+    const auto exports = state.analyzer.list_exports(arguments);
+    const auto sections = state.analyzer.list_sections();
+    const auto bookmarks = state.analyzer.list_bookmarks(arguments);
+    state.strings.assign(strings.array_items().begin(), strings.array_items().end());
+    state.names.assign(names.array_items().begin(), names.array_items().end());
+    state.imports.assign(imports.array_items().begin(), imports.array_items().end());
+    state.exports.assign(exports.array_items().begin(), exports.array_items().end());
+    state.sections.assign(sections.array_items().begin(), sections.array_items().end());
+    state.bookmarks.assign(bookmarks.array_items().begin(), bookmarks.array_items().end());
+}
+
+template <std::size_t N>
+void copy_text(std::array<char, N>& target, std::string_view value) {
+    const auto count = std::min<std::size_t>(N - 1, value.size());
+    std::copy_n(value.begin(), count, target.begin());
+    target[count] = '\0';
+    if (count + 1 < N) std::fill(target.begin() + static_cast<std::ptrdiff_t>(count + 1), target.end(), '\0');
 }
 
 void refresh_xrefs(UiState& state, Address address) {
@@ -198,6 +242,8 @@ void navigate(UiState& state, Address address, bool add_history = true) {
     refresh_xrefs(state, address);
     refresh_hex(state, address);
     state.properties = state.analyzer.get_function(arguments);
+    copy_text(state.name_edit, json_string(state.properties, "name"));
+    copy_text(state.comment_edit, json_string(state.properties, "comment"));
     state.status = "Viewing " + address_text(address);
 }
 
@@ -214,6 +260,7 @@ void open_binary(UiState& state, const std::string& path) {
     state.history_index = 0;
     state.current_address = 0;
     refresh_functions(state);
+    refresh_lists(state);
     const auto stats = state.analyzer.analysis_stats();
     state.status = "Indexed " + std::to_string(stats.find("function_count") ? stats.find("function_count")->as_u64() : 0) +
                    " functions, " + std::to_string(stats.find("instruction_count") ? stats.find("instruction_count")->as_u64() : 0) + " instructions";
@@ -245,7 +292,11 @@ void action_cfg(UiState& state) {
     if (!state.has_image) return;
     Json arguments = Json::object();
     arguments["function_address"] = address_text(state.current_address);
-    set_json_property(state, state.analyzer.cfg(arguments), "CFG refreshed for " + address_text(state.current_address));
+    state.cfg = state.analyzer.cfg(arguments);
+    state.properties = state.cfg;
+    state.side_selection_request = 1;
+    state.center_selection_request = 3;
+    append_log(state, "CFG refreshed for " + address_text(state.current_address));
 }
 
 void action_call_graph(UiState& state, std::string direction) {
@@ -265,11 +316,82 @@ void action_exports(UiState& state) {
     if (state.has_image) set_json_property(state, state.analyzer.list_exports(Json::object()), "Exports refreshed");
 }
 
+void action_lists(UiState& state, int tab = 0) {
+    if (!state.has_image) return;
+    refresh_lists(state);
+    state.list_selection_request = tab;
+    state.show_lists = true;
+}
+
+void action_save_database(UiState& state) {
+    if (!state.has_image) return;
+    const auto result = state.analyzer.save_database(Json::object());
+    append_log(state, result.find("ok") && result.find("ok")->as_bool() ?
+               "Database saved: " + json_string(result, "path") : "Database save failed: " + json_string(result, "error"));
+}
+
+void action_load_database(UiState& state) {
+    if (!state.has_image) return;
+    const auto result = state.analyzer.load_database(Json::object());
+    if (result.find("ok") && result.find("ok")->as_bool()) {
+        refresh_functions(state);
+        refresh_lists(state);
+        navigate(state, state.current_address, false);
+        append_log(state, "Database loaded: " + json_string(result, "path"));
+    } else {
+        append_log(state, "Database load failed: " + json_string(result, "error"));
+    }
+}
+
+void action_set_name(UiState& state) {
+    if (!state.has_image || !state.current_address) return;
+    Json arguments = Json::object();
+    arguments["address"] = address_text(state.current_address);
+    arguments["name"] = std::string(state.name_edit.data());
+    const auto result = state.analyzer.set_name(arguments);
+    if (result.find("ok") && result.find("ok")->as_bool()) {
+        refresh_functions(state);
+        refresh_lists(state);
+        navigate(state, state.current_address, false);
+        append_log(state, "Name updated at " + address_text(state.current_address));
+    } else append_log(state, "Name update failed: " + json_string(result, "error"));
+}
+
+void action_set_comment(UiState& state) {
+    if (!state.has_image || !state.current_address) return;
+    Json arguments = Json::object();
+    arguments["address"] = address_text(state.current_address);
+    arguments["comment"] = std::string(state.comment_edit.data());
+    const auto result = state.analyzer.set_comment(arguments);
+    if (result.find("ok") && result.find("ok")->as_bool()) {
+        navigate(state, state.current_address, false);
+        append_log(state, "Comment updated at " + address_text(state.current_address));
+    } else append_log(state, "Comment update failed: " + json_string(result, "error"));
+}
+
+void action_toggle_bookmark(UiState& state) {
+    if (!state.has_image || !state.current_address) return;
+    bool exists = false;
+    for (const auto& bookmark : state.bookmarks) {
+        if (json_string(bookmark, "address") == address_text(state.current_address)) { exists = true; break; }
+    }
+    Json arguments = Json::object();
+    arguments["address"] = address_text(state.current_address);
+    arguments["enabled"] = !exists;
+    arguments["comment"] = std::string(state.bookmark_edit.data());
+    const auto result = state.analyzer.set_bookmark(arguments);
+    if (result.find("ok") && result.find("ok")->as_bool()) {
+        refresh_lists(state);
+        append_log(state, exists ? "Bookmark removed" : "Bookmark added");
+    } else append_log(state, "Bookmark update failed: " + json_string(result, "error"));
+}
+
 void action_ai_help(UiState& state) {
     state.properties = Json::object();
     state.properties["AI / MCP"] =
         "Register paper_ai.exe as a local stdio server. Recommended calls: open_binary, module_info, "
-        "list_functions, disassemble, xrefs_to, xrefs_from, cfg, call_graph, analysis_stats.";
+        "list_functions, list_names, list_strings, disassemble, xrefs_to, xrefs_from, cfg, call_graph, "
+        "set_name, set_comment, set_bookmark, save_database, analysis_stats.";
     state.side_selection_request = 1;
 }
 
@@ -359,6 +481,7 @@ void build_default_layout() {
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.22f, &bottom, &center);
     ImGui::DockBuilderDockWindow("Functions", left);
     ImGui::DockBuilderDockWindow("Xrefs / Properties", right);
+    ImGui::DockBuilderDockWindow("IDA Lists", right);
     ImGui::DockBuilderDockWindow("Output", bottom);
     ImGui::DockBuilderDockWindow("IDA View-A", center);
     ImGui::DockBuilderFinish(dockspace);
@@ -368,6 +491,8 @@ void draw_menu(UiState& state) {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Open PE...", "Ctrl+O")) open_binary(state, choose_pe_file());
+        if (ImGui::MenuItem("Save analysis database", "Ctrl+S", false, state.has_image)) action_save_database(state);
+        if (ImGui::MenuItem("Reload analysis database", nullptr, false, state.has_image)) action_load_database(state);
         if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
         ImGui::EndMenu();
     }
@@ -395,12 +520,16 @@ void draw_menu(UiState& state) {
         ImGui::Separator();
         if (ImGui::MenuItem("Imports", "Ctrl+I")) action_imports(state);
         if (ImGui::MenuItem("Exports", "Ctrl+E")) action_exports(state);
+        if (ImGui::MenuItem("Strings", "Ctrl+Shift+S")) action_lists(state, 0);
+        if (ImGui::MenuItem("Names", "Shift+F4")) action_lists(state, 1);
+        if (ImGui::MenuItem("Bookmarks", "Ctrl+B")) action_lists(state, 5);
         if (ImGui::MenuItem("AI / MCP help", "F1")) action_ai_help(state);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Functions", nullptr, &state.show_functions);
         ImGui::MenuItem("Xrefs / Properties", nullptr, &state.show_side);
+        ImGui::MenuItem("IDA Lists", nullptr, &state.show_lists);
         ImGui::MenuItem("Output", nullptr, &state.show_output);
         ImGui::EndMenu();
     }
@@ -428,6 +557,10 @@ void handle_shortcuts(UiState& state) {
     if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_D)) action_call_graph(state, "callees");
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_I)) action_imports(state);
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_E)) action_exports(state);
+    if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S)) action_save_database(state);
+    if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S)) action_lists(state, 0);
+    if (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_F4)) action_lists(state, 1);
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_B)) action_toggle_bookmark(state);
     if (ImGui::IsKeyPressed(ImGuiKey_F1)) action_ai_help(state);
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_H)) state.center_selection_request = 1;
 }
@@ -483,6 +616,10 @@ void draw_toolbar(UiState& state) {
     ImGui::SameLine();
     if (ImGui::Button("Exports")) action_exports(state);
     ImGui::SameLine();
+    if (ImGui::Button("Lists")) action_lists(state);
+    ImGui::SameLine();
+    if (ImGui::Button("Mark")) action_toggle_bookmark(state);
+    ImGui::SameLine();
     if (ImGui::Button("Hex")) state.center_selection_request = 1;
     ImGui::SameLine();
     if (ImGui::Button("AI")) action_ai_help(state);
@@ -519,6 +656,74 @@ ImVec4 instruction_color(std::string_view kind) {
     if (kind == "return") return ImVec4(1.0f, 0.45f, 0.45f, 1.0f);
     if (kind == "data") return ImVec4(0.55f, 0.65f, 0.72f, 1.0f);
     return ImVec4(0.55f, 0.85f, 0.95f, 1.0f);
+}
+
+void draw_cfg_graph(UiState& state) {
+    const auto* blocks = state.cfg.find("blocks");
+    if (!blocks || !blocks->is_array() || blocks->array_items().empty()) {
+        ImGui::TextDisabled("Run CFG on a function to build the graph.");
+        return;
+    }
+    ImGui::BeginChild("cfg_canvas", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float node_width = 250.0f;
+    const float node_height = 66.0f;
+    const float gap_x = 54.0f;
+    const float gap_y = 42.0f;
+    const std::size_t columns = available.x > 0.0f ?
+        std::max<std::size_t>(1, static_cast<std::size_t>(available.x / (node_width + gap_x))) : 1;
+    struct NodePosition { Address address = 0; ImVec2 position{}; };
+    std::vector<NodePosition> positions;
+    positions.reserve(blocks->array_items().size());
+    for (std::size_t index = 0; index < blocks->array_items().size(); ++index) {
+        const auto& block = blocks->array_items()[index];
+        const auto address = parse_address(json_string(block, "start")).value_or(0);
+        const auto column = index % columns;
+        const auto row = index / columns;
+        positions.push_back({address, ImVec2(origin.x + static_cast<float>(column) * (node_width + gap_x),
+                                             origin.y + static_cast<float>(row) * (node_height + gap_y))});
+    }
+    auto position_for = [&](Address address) -> const NodePosition* {
+        for (const auto& position : positions) if (position.address == address) return &position;
+        return nullptr;
+    };
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    for (std::size_t index = 0; index < blocks->array_items().size(); ++index) {
+        const auto& block = blocks->array_items()[index];
+        const auto* source = &positions[index];
+        const auto* successors = block.find("successors");
+        if (!successors || !successors->is_array()) continue;
+        for (const auto& successor : successors->array_items()) {
+            const auto* target = position_for(parse_address(successor.as_string()).value_or(0));
+            if (!target) continue;
+            const ImVec2 from(source->position.x + node_width * 0.5f, source->position.y + node_height);
+            const ImVec2 to(target->position.x + node_width * 0.5f, target->position.y);
+            draw_list->AddLine(from, to, IM_COL32(100, 170, 230, 210), 2.0f);
+            draw_list->AddTriangleFilled(ImVec2(to.x - 5.0f, to.y - 7.0f), ImVec2(to.x + 5.0f, to.y - 7.0f), to, IM_COL32(100, 170, 230, 230));
+        }
+    }
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        const auto& position = positions[index];
+        const auto& block = blocks->array_items()[index];
+        const ImU32 fill = position.address == state.current_address ? IM_COL32(35, 100, 150, 240) : IM_COL32(27, 42, 63, 245);
+        draw_list->AddRectFilled(position.position, ImVec2(position.position.x + node_width, position.position.y + node_height), fill, 5.0f);
+        draw_list->AddRect(position.position, ImVec2(position.position.x + node_width, position.position.y + node_height), IM_COL32(100, 180, 235, 220), 5.0f, 0, 1.5f);
+        const auto label = json_string(block, "start") + " - " + json_string(block, "end");
+        draw_list->AddText(g_code_font, 14.0f, ImVec2(position.position.x + 10.0f, position.position.y + 10.0f), IM_COL32(220, 238, 250, 255), label.c_str());
+        const auto* successors = block.find("successors");
+        const auto successor_count = successors && successors->is_array() ? successors->array_items().size() : 0;
+        const auto summary = "successors: " + std::to_string(successor_count);
+        draw_list->AddText(g_code_font, 13.0f, ImVec2(position.position.x + 10.0f, position.position.y + 36.0f), IM_COL32(155, 180, 200, 255), summary.c_str());
+        ImGui::SetCursorScreenPos(position.position);
+        ImGui::PushID(static_cast<int>(index));
+        if (ImGui::InvisibleButton("cfg_node", ImVec2(node_width, node_height))) navigate(state, position.address);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Jump to %s", json_string(block, "start").c_str());
+        ImGui::PopID();
+    }
+    const auto rows = (positions.size() + columns - 1) / columns;
+    ImGui::Dummy(ImVec2(static_cast<float>(columns) * (node_width + gap_x), static_cast<float>(rows) * (node_height + gap_y)));
+    ImGui::EndChild();
 }
 
 void draw_disassembly(UiState& state) {
@@ -561,8 +766,14 @@ void draw_disassembly(UiState& state) {
                     ImGui::TextUnformatted(json_string(instruction, "operands").c_str());
                     ImGui::TableNextColumn();
                     const auto target = json_string(instruction, "target");
-                    if (!target.empty()) ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.95f, 1.0f), "-> %s", target.c_str());
+                    const auto name = json_string(instruction, "name");
+                    const auto comment = json_string(instruction, "comment");
+                    if (!name.empty()) ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f), "%s", name.c_str());
+                    else if (!target.empty()) ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.95f, 1.0f), "-> %s", target.c_str());
+                    else if (!comment.empty()) ImGui::TextDisabled("; %s", comment.c_str());
                     else if (kind == "return") ImGui::TextDisabled("function return");
+                    if (!comment.empty() && !name.empty()) ImGui::SameLine();
+                    if (!comment.empty() && !name.empty()) ImGui::TextDisabled("; %s", comment.c_str());
                 }
                 ImGui::EndTable();
             }
@@ -577,6 +788,10 @@ void draw_disassembly(UiState& state) {
         if (ImGui::BeginTabItem("Info", nullptr, state.center_selection_request == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
             const auto info = state.analyzer.module_info();
             ImGui::TextUnformatted(info.dump().c_str());
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Graph View", nullptr, state.center_selection_request == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            draw_cfg_graph(state);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -613,6 +828,22 @@ void draw_side(UiState& state) {
         }
         if (ImGui::BeginTabItem("Properties", nullptr, state.side_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
             ImGui::BeginChild("properties_view", ImVec2(0, 0), false);
+            if (state.has_image && state.current_address) {
+                ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "%s", address_text(state.current_address).c_str());
+                ImGui::SetNextItemWidth(-92.0f);
+                ImGui::InputText("##name_edit", state.name_edit.data(), state.name_edit.size());
+                ImGui::SameLine();
+                if (ImGui::Button("Rename")) action_set_name(state);
+                ImGui::SetNextItemWidth(-92.0f);
+                ImGui::InputText("##comment_edit", state.comment_edit.data(), state.comment_edit.size());
+                ImGui::SameLine();
+                if (ImGui::Button("Comment")) action_set_comment(state);
+                ImGui::SetNextItemWidth(-92.0f);
+                ImGui::InputText("##bookmark_edit", state.bookmark_edit.data(), state.bookmark_edit.size());
+                ImGui::SameLine();
+                if (ImGui::Button("Bookmark")) action_toggle_bookmark(state);
+                ImGui::Separator();
+            }
             ImGui::TextUnformatted(state.properties.dump().c_str());
             ImGui::EndChild();
             ImGui::EndTabItem();
@@ -620,6 +851,117 @@ void draw_side(UiState& state) {
         ImGui::EndTabBar();
     }
     state.side_selection_request = -1;
+    ImGui::PopFont();
+    ImGui::End();
+}
+
+void draw_lists(UiState& state) {
+    if (!state.show_lists) return;
+    ImGui::Begin("IDA Lists", &state.show_lists);
+    ImGui::TextDisabled("Strings / Names / Imports / Exports / Segments / Bookmarks");
+    if (ImGui::InputTextWithHint("##list_filter", "Filter current list...", state.list_filter.data(), state.list_filter.size())) refresh_lists(state);
+    ImGui::Separator();
+    ImGui::PushFont(g_code_font);
+    if (ImGui::BeginTabBar("ida_lists_tabs")) {
+        if (ImGui::BeginTabItem("Strings", nullptr, state.list_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled("%zu literals", state.strings.size());
+            ImGui::BeginChild("strings_list", ImVec2(0, 0), false);
+            for (std::size_t index = 0; index < state.strings.size(); ++index) {
+                const auto address = json_string(state.strings[index], "address");
+                const auto value = json_string(state.strings[index], "value");
+                ImGui::PushID(static_cast<int>(index));
+                if (ImGui::Selectable((address + "  " + value).c_str())) {
+                    if (const auto parsed = parse_address(address)) navigate(state, *parsed);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Names", nullptr, state.list_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled("%zu names", state.names.size());
+            ImGui::BeginChild("names_list", ImVec2(0, 0), false);
+            for (std::size_t index = 0; index < state.names.size(); ++index) {
+                const auto address = json_string(state.names[index], "address");
+                const auto name = json_string(state.names[index], "name");
+                const auto kind = json_string(state.names[index], "kind");
+                ImGui::PushID(static_cast<int>(index));
+                if (ImGui::Selectable((address + "  " + name + "  [" + kind + "]").c_str())) {
+                    if (const auto parsed = parse_address(address)) navigate(state, *parsed);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Imports", nullptr, state.list_selection_request == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled("%zu imports", state.imports.size());
+            ImGui::BeginChild("imports_list", ImVec2(0, 0), false);
+            for (std::size_t index = 0; index < state.imports.size(); ++index) {
+                const auto thunk = json_string(state.imports[index], "thunk");
+                const auto library = json_string(state.imports[index], "library");
+                const auto name = json_string(state.imports[index], "name");
+                ImGui::PushID(static_cast<int>(index));
+                if (ImGui::Selectable((thunk + "  " + library + "!" + name).c_str())) {
+                    if (const auto parsed = parse_address(thunk)) navigate(state, *parsed);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Exports", nullptr, state.list_selection_request == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled("%zu exports", state.exports.size());
+            ImGui::BeginChild("exports_list", ImVec2(0, 0), false);
+            for (std::size_t index = 0; index < state.exports.size(); ++index) {
+                const auto address = json_string(state.exports[index], "address");
+                const auto name = json_string(state.exports[index], "name");
+                ImGui::PushID(static_cast<int>(index));
+                if (ImGui::Selectable((address + "  " + name).c_str())) {
+                    if (const auto parsed = parse_address(address)) navigate(state, *parsed);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Segments", nullptr, state.list_selection_request == 4 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled("%zu segments", state.sections.size());
+            ImGui::BeginChild("segments_list", ImVec2(0, 0), false);
+            for (std::size_t index = 0; index < state.sections.size(); ++index) {
+                const auto start = json_string(state.sections[index], "start");
+                const auto end = json_string(state.sections[index], "end");
+                const auto name = json_string(state.sections[index], "name");
+                const auto perms = std::string(json_bool(state.sections[index], "executable") ? "X" : "-") +
+                                   (json_bool(state.sections[index], "readable") ? "R" : "-") +
+                                   (json_bool(state.sections[index], "writable") ? "W" : "-");
+                ImGui::PushID(static_cast<int>(index));
+                if (ImGui::Selectable((name + "  " + start + " - " + end + "  [" + perms + "]").c_str())) {
+                    if (const auto parsed = parse_address(start)) navigate(state, *parsed);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Bookmarks", nullptr, state.list_selection_request == 5 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled("%zu bookmarks", state.bookmarks.size());
+            ImGui::BeginChild("bookmarks_list", ImVec2(0, 0), false);
+            for (std::size_t index = 0; index < state.bookmarks.size(); ++index) {
+                const auto address = json_string(state.bookmarks[index], "address");
+                const auto comment = json_string(state.bookmarks[index], "comment");
+                ImGui::PushID(static_cast<int>(index));
+                if (ImGui::Selectable((address + (comment.empty() ? "" : "  " + comment)).c_str())) {
+                    if (const auto parsed = parse_address(address)) navigate(state, *parsed);
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+    state.list_selection_request = -1;
     ImGui::PopFont();
     ImGui::End();
 }
@@ -666,6 +1008,7 @@ void draw_ui(UiState& state) {
     draw_functions(state);
     draw_disassembly(state);
     draw_side(state);
+    draw_lists(state);
     draw_output(state);
 }
 
