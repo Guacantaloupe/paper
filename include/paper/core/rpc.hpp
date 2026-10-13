@@ -17,6 +17,7 @@ private:
     Json error_response(const Json& id, int code, std::string_view message) const;
 
     Analyzer& analyzer_;
+    bool initialized_ = false;
 };
 
 } // namespace paper
