@@ -2262,6 +2262,7 @@ Json Analyzer::source_locations(const Json& arguments) const {
     if (const auto* addresses = arguments.find("addresses"); addresses && addresses->is_array()) {
         for (const auto& value : addresses->array_items()) if (const auto address = parse_address_value(&value)) add_address(*address);
     } else if (const auto address = argument_address(arguments, "address")) add_address(address);
+    else if (const auto address = argument_address(arguments, "function_address")) add_address(address);
     if (functions.empty()) {
         Json error = Json::object();
         error["error"] = "address or addresses must identify a function or call site";
@@ -2856,7 +2857,7 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
     } else if (name == "find_instructions") {
         if (reject_unknown({"pattern", "sequence", "target_in", "address", "function_address", "limit"})) return validation_error;
     } else if (name == "source_locations") {
-        if (reject_unknown({"address", "addresses"})) return validation_error;
+        if (reject_unknown({"address", "addresses", "function_address"})) return validation_error;
     } else if (name == "search_bytes") {
         if (reject_unknown({"pattern", "limit"})) return validation_error;
     } else if (name == "list_imports" || name == "list_exports") {
