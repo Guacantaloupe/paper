@@ -43,6 +43,10 @@ public:
     Json list_exports(const Json& arguments) const;
     Json list_names(const Json& arguments) const;
     Json list_bookmarks(const Json& arguments) const;
+    Json list_vtables(const Json& arguments) const;
+    Json vtable_of(const Json& arguments) const;
+    Json function_strings(const Json& arguments) const;
+    Json list_runtime_functions(const Json& arguments) const;
     Json call_graph(const Json& arguments) const;
     Json analysis_stats() const;
 
@@ -63,6 +67,12 @@ private:
         std::size_t function_index = 0;
     };
 
+    struct VtableRecord {
+        Address start = 0;
+        Address end = 0;
+        std::vector<Address> slots;
+    };
+
     void analyze();
     void build_functions_and_cfg(const std::vector<Address>& starts);
     void build_strings();
@@ -73,6 +83,7 @@ private:
     static Address argument_address(const Json& arguments, std::string_view key);
     static std::size_t argument_size(const Json& arguments, std::string_view key, std::size_t fallback);
     static std::string address_string(Address address);
+    std::vector<VtableRecord> discover_vtables() const;
 
     mutable std::shared_mutex mutex_;
     PeImage image_;
