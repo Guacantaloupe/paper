@@ -262,7 +262,9 @@ void refresh_lists(UiState& state) {
     if (state.list_filter[0] != '\0') arguments["query"] = std::string(state.list_filter.data());
     const auto strings = state.analyzer.list_strings(arguments);
     const auto names = state.analyzer.list_names(arguments);
-    const auto imports = state.analyzer.list_imports(arguments);
+    Json import_arguments = arguments;
+    import_arguments["summary"] = false;
+    const auto imports = state.analyzer.list_imports(import_arguments);
     const auto exports = state.analyzer.list_exports(arguments);
     const auto sections = state.analyzer.list_sections();
     const auto bookmarks = state.analyzer.list_bookmarks(arguments);
