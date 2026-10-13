@@ -96,7 +96,7 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `find_instructions` | 解码后的指令/连续指令模式查询 |
 | `source_locations` | check/log 文件、行号和表达式证据 |
 | `search_bytes` | 十六进制字节模式搜索，支持 `?` 半字节/通配字节 |
-| `list_imports` | 导入 DLL、符号、IAT 和 thunk 来源；`summary:true` 返回 descriptor 事实 |
+| `list_imports` | 导入 DLL、符号、IAT 和 thunk 来源；默认 summary 对象，`summary:false` 返回旧数组 |
 | `list_exports` | 导出名称、序号和地址 |
 | `list_names` | 函数、导入、导出和用户名称 |
 | `list_bookmarks` | 持久化地址标记 |
