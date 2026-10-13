@@ -2437,7 +2437,11 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         return captures.empty() || std::find(captures.begin(), captures.end(), name) != captures.end();
     };
     const auto passes_predicates = [&](const Instruction& instruction) {
-        if (displacement_filter && instruction.memory_displacement != *displacement_filter) return false;
+        if (displacement_filter) {
+            if (!instruction.memory_read && !instruction.memory_write && !instruction.rip_relative &&
+                instruction.memory_base.empty() && instruction.memory_index.empty()) return false;
+            if (instruction.memory_displacement != *displacement_filter) return false;
+        }
         if (immediate_min || immediate_max) {
             if (!instruction.immediate) return false;
             const auto immediate = static_cast<std::int64_t>(*instruction.immediate);
