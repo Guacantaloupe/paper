@@ -36,8 +36,11 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 9. `call_graph({"function_address":"0x...","direction":"callees","depth":2})`：扩展到调用图。
 10. `search_strings()`、`list_strings()`、`search_bytes()`：用文本或字节模式定位辅助证据。
 11. `list_names()`、`list_bookmarks()`：查看当前数据库中的函数/导入/导出/用户命名和标记。
-12. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
-13. `save_database()`、`load_database()`：保存或恢复 `<image>.paper.json` 侧车数据库。
+12. `list_vtables()`、`vtable_of()`：枚举只读数据中的函数指针表，并把虚函数地址映射到表槽位。
+13. `function_strings()`：列出单个函数直接引用的字符串。
+14. `list_runtime_functions()`：导出 x64 PE `.pdata` 的运行时函数范围。
+15. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
+16. `save_database({"path":"..."})`、`load_database()`：保存或恢复数据库；保存路径可以指向用户可写目录，不必写回 Program Files。
 
 ## 经典 xrefs 查询
 
@@ -82,6 +85,10 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `list_exports` | 导出名称、序号和地址 |
 | `list_names` | 函数、导入、导出和用户名称 |
 | `list_bookmarks` | 持久化地址标记 |
+| `list_vtables` | 枚举函数指针表和安装引用 |
+| `vtable_of` | 查找函数所属虚表和槽位 |
+| `function_strings` | 查询单函数引用的字符串 |
+| `list_runtime_functions` | 导出 `.pdata` 函数范围 |
 | `call_graph` | 调用者/被调用者遍历 |
 | `set_name` / `set_comment` | 写入或清除地址标注 |
 | `set_bookmark` | 写入或清除地址书签 |
@@ -89,6 +96,8 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `analysis_stats` | 分析时间、线程数和索引规模 |
 
 所有查询都读取已经建立的内存索引。`xrefs_to`、`xrefs_from`、函数查找和 CFG 查询不重新扫描文件；分页参数用于避免大程序把整个结果一次性送给 AI。`module_info.runtime_function_count` 可以用来判断 PE 是否提供了 x64 `.pdata` 函数边界证据；`analysis_stats` 可用来记录多核分析耗时和工作线程数。
+
+`xrefs_to` 和 `xrefs_from` 同时接受单个 `address` 或 `addresses` 数组；当 `xrefs_from` 的地址正好是函数起始地址时，会合并该函数所有指令的出向引用。未知参数会返回错误，不会静默退回默认查询。
 
 如果本地构建启用了 Zydis（CMake 选项 `PAPER_WITH_ZYDIS=ON`），AI 不需要改变任何调用方式：同一组 MCP 工具会自动获得更完整的 x86-64 指令文本和控制流目标。
 
