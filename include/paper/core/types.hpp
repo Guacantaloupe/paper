@@ -65,6 +65,11 @@ struct RuntimeFunction {
     std::uint8_t unwind_flags = 0;
     std::uint8_t unwind_code_count = 0;
     Address exception_handler = 0;
+    // Language-specific data follows the handler RVA in IMAGE_UNWIND_INFO.
+    // Keeping the file-backed bytes lets the query layer expose only a
+    // structure when its MSVC magic and all referenced RVAs validate.
+    Address handler_data = 0;
+    std::vector<std::uint8_t> handler_data_bytes;
 };
 
 struct TlsCallback {
