@@ -21,6 +21,9 @@ add_library(paper_core STATIC
 )
 target_include_directories(paper_core PUBLIC include)
 target_link_libraries(paper_core PUBLIC Threads::Threads)
+if(WIN32)
+    target_link_libraries(paper_core PUBLIC dbghelp)
+endif()
 
 if(PAPER_WITH_ZYDIS)
     find_package(Zydis CONFIG REQUIRED)
