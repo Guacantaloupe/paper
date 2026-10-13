@@ -79,6 +79,7 @@ std::vector<std::uint8_t> make_fixture() {
 
 int main() {
     const auto path = std::filesystem::temp_directory_path() / "paper_analyzer_smoke_fixture.exe";
+    std::filesystem::remove(path.string() + ".paper.json");
     const auto bytes = make_fixture();
     {
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -105,5 +106,26 @@ int main() {
     function_args["direction"] = "callees";
     const auto graph = analyzer.call_graph(function_args);
     assert(graph.find("nodes") && graph.find("nodes")->array_items().size() == 1);
+
+    paper::Json annotation = paper::Json::object();
+    annotation["address"] = "0x140001000";
+    annotation["name"] = "entry_fixture";
+    assert(analyzer.set_name(annotation).find("ok")->as_bool());
+    annotation["comment"] = "fixture entry";
+    assert(analyzer.set_comment(annotation).find("ok")->as_bool());
+    annotation["enabled"] = true;
+    assert(analyzer.set_bookmark(annotation).find("ok")->as_bool());
+    const auto saved = analyzer.save_database(paper::Json::object());
+    assert(saved.find("ok") && saved.find("ok")->as_bool());
+
+    paper::Analyzer reloaded;
+    assert(reloaded.open_file(path.string(), error));
+    paper::Json named_args = paper::Json::object();
+    named_args["query"] = "entry_fixture";
+    assert(reloaded.list_names(named_args).array_items().size() == 1);
+    named_args["address"] = "0x140001000";
+    assert(reloaded.get_function(named_args).find("name")->as_string() == "entry_fixture");
+    assert(reloaded.list_bookmarks(paper::Json::object()).array_items().size() == 1);
+    std::filesystem::remove(path.string() + ".paper.json");
     return 0;
 }
