@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 
 namespace paper {
 namespace {
@@ -72,6 +75,10 @@ bool PeImage::load_bytes(std::vector<std::uint8_t> bytes, std::string path, std:
     imports_.clear();
     exports_.clear();
     runtime_functions_.clear();
+    tls_callbacks_.clear();
+    relocations_.clear();
+    resources_.clear();
+    pdb_info_ = {};
     headers_size_ = 0;
     directory_count_ = 0;
     directories_.fill({0, 0});
@@ -151,7 +158,11 @@ bool PeImage::parse(std::string& error) {
     std::string ignored;
     if (directory_count_ > 0) parse_exports(directories_[0].first, directories_[0].second, ignored);
     if (directory_count_ > 1) parse_imports(directories_[1].first, directories_[1].second, ignored);
+    if (directory_count_ > 2) parse_resources(directories_[2].first, directories_[2].second, ignored);
     if (directory_count_ > 3) parse_runtime_functions(directories_[3].first, directories_[3].second, ignored);
+    if (directory_count_ > 5) parse_relocations(directories_[5].first, directories_[5].second, ignored);
+    if (directory_count_ > 6) parse_debug(directories_[6].first, directories_[6].second, ignored);
+    if (directory_count_ > 9) parse_tls(directories_[9].first, directories_[9].second, ignored);
     return true;
 }
 
@@ -261,6 +272,7 @@ bool PeImage::parse_exports(std::uint32_t directory_rva, std::uint32_t directory
         const std::uint32_t function_rva = u32(bytes_, *functions + static_cast<std::size_t>(function_index) * 4);
         symbol.address = info_.image_base + function_rva;
         symbol.forwarded = function_rva >= directory_rva && function_rva < directory_rva + directory_size;
+        if (symbol.forwarded) symbol.forwarder = read_c_string_rva(function_rva);
         exports_.push_back(std::move(symbol));
     }
     return true;
@@ -283,11 +295,25 @@ bool PeImage::parse_runtime_functions(std::uint32_t directory_rva, std::uint32_t
         const auto* begin_section = section_for_rva(begin_rva);
         const auto* end_section = section_for_rva(end_rva - 1);
         if (!begin_section || begin_section != end_section || !begin_section->executable) continue;
-        runtime_functions_.push_back(RuntimeFunction{
-            info_.image_base + begin_rva,
-            info_.image_base + end_rva,
-            unwind_rva ? info_.image_base + unwind_rva : 0,
-        });
+        RuntimeFunction record;
+        record.start = info_.image_base + begin_rva;
+        record.end = info_.image_base + end_rva;
+        record.unwind = unwind_rva ? info_.image_base + unwind_rva : 0;
+        if (unwind_rva) {
+            const auto unwind_offset = rva_to_file_offset(unwind_rva);
+            if (unwind_offset && range_ok(*unwind_offset, 4, bytes_.size())) {
+                const auto version_flags = bytes_[*unwind_offset];
+                record.unwind_flags = static_cast<std::uint8_t>(version_flags >> 3);
+                record.unwind_code_count = bytes_[*unwind_offset + 2];
+                const std::size_t codes_size = static_cast<std::size_t>(record.unwind_code_count) * 2;
+                std::size_t handler_offset = 4 + ((codes_size + 3) & ~std::size_t(3));
+                if ((record.unwind_flags & 0x3u) != 0 && range_ok(*unwind_offset + handler_offset, 4, bytes_.size())) {
+                    const auto handler_rva = u32(bytes_, *unwind_offset + handler_offset);
+                    record.exception_handler = handler_rva ? info_.image_base + handler_rva : 0;
+                }
+            }
+        }
+        runtime_functions_.push_back(std::move(record));
     }
     std::sort(runtime_functions_.begin(), runtime_functions_.end(), [](const RuntimeFunction& a, const RuntimeFunction& b) {
         return a.start < b.start;
@@ -295,6 +321,161 @@ bool PeImage::parse_runtime_functions(std::uint32_t directory_rva, std::uint32_t
     runtime_functions_.erase(std::unique(runtime_functions_.begin(), runtime_functions_.end(), [](const RuntimeFunction& a, const RuntimeFunction& b) {
         return a.start == b.start && a.end == b.end;
     }), runtime_functions_.end());
+    return true;
+}
+
+bool PeImage::parse_tls(std::uint32_t directory_rva, std::uint32_t directory_size, std::string&) {
+    if (directory_rva == 0 || directory_size == 0) return true;
+    const auto directory = rva_to_file_offset(directory_rva);
+    if (!directory) return false;
+    const std::size_t width = info_.pe32_plus ? 8 : 4;
+    const std::size_t callbacks_field = info_.pe32_plus ? 24 : 12;
+    if (!range_ok(*directory, callbacks_field + width, bytes_.size())) return false;
+    const Address callbacks_va = info_.pe32_plus ? u64(bytes_, *directory + callbacks_field)
+                                                  : u32(bytes_, *directory + callbacks_field);
+    if (callbacks_va == 0) return true;
+    const auto callbacks_rva = callbacks_va >= info_.image_base
+        ? callbacks_va - info_.image_base : callbacks_va;
+    if (callbacks_rva > std::numeric_limits<std::uint32_t>::max()) return false;
+    const auto callbacks = rva_to_file_offset(static_cast<std::uint32_t>(callbacks_rva));
+    if (!callbacks) return false;
+    for (std::size_t index = 0; index < 100'000 && range_ok(*callbacks + index * width, width, bytes_.size()); ++index) {
+        const Address callback = info_.pe32_plus ? u64(bytes_, *callbacks + index * width)
+                                                  : u32(bytes_, *callbacks + index * width);
+        if (callback == 0) break;
+        if (section_for_address(callback)) tls_callbacks_.push_back(TlsCallback{callback});
+    }
+    return true;
+}
+
+bool PeImage::parse_relocations(std::uint32_t directory_rva, std::uint32_t directory_size, std::string&) {
+    if (directory_rva == 0 || directory_size < 8) return true;
+    const auto directory = rva_to_file_offset(directory_rva);
+    if (!directory || *directory >= bytes_.size()) return false;
+    const auto end = std::min<std::size_t>(bytes_.size(), *directory + directory_size);
+    std::size_t cursor = *directory;
+    while (cursor + 8 <= end) {
+        const auto page_rva = u32(bytes_, cursor);
+        const auto block_size = u32(bytes_, cursor + 4);
+        if (block_size < 8 || cursor + block_size > end) break;
+        const std::size_t entry_count = (block_size - 8) / 2;
+        for (std::size_t index = 0; index < entry_count; ++index) {
+            const auto raw = u16(bytes_, cursor + 8 + index * 2);
+            const auto type = static_cast<std::uint16_t>(raw >> 12);
+            const auto offset = static_cast<std::uint16_t>(raw & 0x0fff);
+            if (type == 0) continue; // IMAGE_REL_BASED_ABSOLUTE padding.
+            const auto rva = static_cast<std::uint64_t>(page_rva) + offset;
+            if (rva > std::numeric_limits<std::uint32_t>::max()) continue;
+            const auto address = info_.image_base + rva;
+            if (section_for_rva(static_cast<std::uint32_t>(rva))) {
+                relocations_.push_back(RelocationEntry{address, page_rva, type});
+            }
+        }
+        cursor += block_size;
+    }
+    std::sort(relocations_.begin(), relocations_.end(), [](const RelocationEntry& left, const RelocationEntry& right) {
+        return left.address < right.address;
+    });
+    return true;
+}
+
+bool PeImage::parse_resources(std::uint32_t directory_rva, std::uint32_t directory_size, std::string&) {
+    if (directory_rva == 0 || directory_size < 16) return true;
+    const auto root = rva_to_file_offset(directory_rva);
+    if (!root || !range_ok(*root, 16, bytes_.size())) return false;
+    const auto limit = std::min<std::size_t>(bytes_.size(), *root + directory_size);
+    auto name_for = [&](std::uint32_t raw) {
+        if ((raw & 0x80000000u) == 0) {
+            static const char* known[] = {"", "CURSOR", "BITMAP", "ICON", "MENU", "DIALOG", "STRING", "FONTDIR", "FONT", "ACCELERATOR", "RCDATA", "MESSAGETABLE", "GROUP_CURSOR", "", "GROUP_ICON", "", "VERSION", "DLGINCLUDE", "PLUGPLAY", "VXD", "ANICURSOR", "ANIICON", "HTML", "MANIFEST"};
+            const auto id = raw & 0x7fffffffu;
+            if (id < sizeof(known) / sizeof(known[0]) && known[id][0] != 0) return std::string(known[id]);
+            return std::string("#") + std::to_string(id);
+        }
+        const auto offset = *root + (raw & 0x7fffffffu);
+        if (!range_ok(offset, 2, limit)) return std::string("<invalid>");
+        const auto length = u16(bytes_, offset);
+        std::string value;
+        value.reserve(length);
+        for (std::size_t index = 0; index < length && offset + 2 + index * 2 + 1 < limit; ++index) {
+            const auto code = u16(bytes_, offset + 2 + index * 2);
+            value.push_back(code <= 0x7f ? static_cast<char>(code) : '?');
+        }
+        return value;
+    };
+    std::size_t record_count = 0;
+    std::function<void(std::size_t, std::vector<std::string>&, unsigned)> visit;
+    visit = [&](std::size_t directory_offset, std::vector<std::string>& path, unsigned depth) {
+        if (depth > 8 || record_count >= 100'000 || !range_ok(directory_offset, 16, limit)) return;
+        const auto named = u16(bytes_, directory_offset + 12);
+        const auto ids = u16(bytes_, directory_offset + 14);
+        const auto count = static_cast<std::size_t>(named) + ids;
+        if (count > 65'535 || !range_ok(directory_offset + 16, count * 8, limit)) return;
+        for (std::size_t index = 0; index < count && record_count < 100'000; ++index) {
+            const auto entry = directory_offset + 16 + index * 8;
+            const auto name = name_for(u32(bytes_, entry));
+            const auto raw_offset = u32(bytes_, entry + 4);
+            path.push_back(name);
+            if (raw_offset & 0x80000000u) {
+                const auto child = *root + (raw_offset & 0x7fffffffu);
+                visit(child, path, depth + 1);
+            } else {
+                const auto data = *root + (raw_offset & 0x7fffffffu);
+                if (range_ok(data, 16, limit)) {
+                    ResourceEntry record;
+                    if (!path.empty()) record.type = path[0];
+                    if (path.size() > 1) record.name = path[1];
+                    if (path.size() > 2) record.language = path[2];
+                    record.data_rva = u32(bytes_, data);
+                    record.size = u32(bytes_, data + 4);
+                    record.codepage = u32(bytes_, data + 8);
+                    resources_.push_back(std::move(record));
+                    ++record_count;
+                }
+            }
+            path.pop_back();
+        }
+    };
+    std::vector<std::string> path;
+    visit(*root, path, 0);
+    return true;
+}
+
+bool PeImage::parse_debug(std::uint32_t directory_rva, std::uint32_t directory_size, std::string&) {
+    if (directory_rva == 0 || directory_size < 28) return true;
+    const auto directory = rva_to_file_offset(directory_rva);
+    if (!directory || *directory >= bytes_.size()) return false;
+    const auto count = std::min<std::size_t>(directory_size / 28, 4096);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto entry = *directory + index * 28;
+        if (!range_ok(entry, 28, bytes_.size())) break;
+        const auto type = u32(bytes_, entry + 12);
+        const auto size = u32(bytes_, entry + 16);
+        const auto data_rva = u32(bytes_, entry + 20);
+        const auto data_file = u32(bytes_, entry + 24);
+        if (type != 2 || size < 24) continue; // IMAGE_DEBUG_TYPE_CODEVIEW
+        std::optional<std::size_t> data;
+        if (data_file != 0 && range_ok(data_file, size, bytes_.size())) data = data_file;
+        else if (const auto mapped = rva_to_file_offset(data_rva); mapped && range_ok(*mapped, size, bytes_.size())) data = *mapped;
+        if (!data || u32(bytes_, *data) != 0x53445352u) continue; // RSDS
+        pdb_info_.present = true;
+        pdb_info_.debug_type = type;
+        const auto d1 = u32(bytes_, *data + 4);
+        const auto d2 = u16(bytes_, *data + 8);
+        const auto d3 = u16(bytes_, *data + 10);
+        std::ostringstream guid;
+        guid << std::hex << std::setfill('0') << std::setw(8) << d1 << '-'
+             << std::setw(4) << d2 << '-' << std::setw(4) << d3 << '-';
+        for (std::size_t byte = 0; byte < 8; ++byte) {
+            if (byte == 2) guid << '-';
+            guid << std::setw(2) << static_cast<unsigned>(bytes_[*data + 12 + byte]);
+        }
+        pdb_info_.guid = guid.str();
+        pdb_info_.age = u32(bytes_, *data + 20);
+        std::size_t path = *data + 24;
+        while (path < *data + size && path < bytes_.size() && bytes_[path] != 0) ++path;
+        pdb_info_.path.assign(reinterpret_cast<const char*>(bytes_.data() + *data + 24), path - (*data + 24));
+        break;
+    }
     return true;
 }
 
