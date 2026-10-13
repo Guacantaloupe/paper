@@ -133,6 +133,10 @@ private:
     std::unordered_set<Address> noreturn_targets_;
     std::unordered_set<Address> noreturn_functions_;
     std::unordered_map<Address, std::string> noreturn_reasons_;
+    mutable std::vector<VtableRecord> vtable_cache_;
+    mutable bool vtable_cache_valid_ = false;
+    mutable std::vector<RttiRecord> rtti_cache_;
+    mutable bool rtti_cache_valid_ = false;
     std::unordered_map<Address, std::string> names_;
     std::unordered_map<Address, std::string> comments_;
     std::unordered_map<Address, std::string> bookmarks_;
@@ -141,4 +145,5 @@ private:
 };
 
 } // namespace paper
+
 
