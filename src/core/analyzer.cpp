@@ -386,9 +386,11 @@ void Analyzer::analyze() {
     // multiple executable case edges. Add those proven edges to the same
     // xref graph used by call/jump queries so switch dispatch is not a dead
     // end in the navigation engine.
+    std::set<std::pair<Address, Address>> switch_xrefs;
     for (const auto& function : functions_) {
         for (const auto& switch_record : discover_switches(&function)) {
             for (const auto target : switch_record.targets) {
+                if (!switch_xrefs.insert({switch_record.instruction, target}).second) continue;
                 Xref xref;
                 xref.from = switch_record.instruction;
                 xref.to = target;
