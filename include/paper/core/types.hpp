@@ -46,6 +46,12 @@ struct ImportSymbol {
     std::uint16_t ordinal = 0;
     Address thunk = 0;
     bool by_ordinal = false;
+    // Descriptor facts are retained so callers can tell whether the PE
+    // carries names in OriginalFirstThunk or in the IAT (FirstThunk).
+    Address descriptor = 0;
+    std::uint32_t original_first_thunk = 0;
+    std::uint32_t first_thunk = 0;
+    bool names_from_first_thunk = false;
 };
 
 struct ExportSymbol {
