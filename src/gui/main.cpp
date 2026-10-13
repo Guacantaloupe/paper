@@ -39,7 +39,8 @@ IDXGISwapChain* g_swap_chain = nullptr;
 ID3D11RenderTargetView* g_main_render_target = nullptr;
 UINT g_resize_width = 0;
 UINT g_resize_height = 0;
-constexpr float kToolbarHeight = 38.0f;
+ImFont* g_code_font = nullptr;
+constexpr float kToolbarHeight = 44.0f;
 
 std::string json_string(const Json& value, std::string_view key) {
     const auto* item = value.find(key);
@@ -272,7 +273,26 @@ void action_ai_help(UiState& state) {
     state.side_selection_request = 1;
 }
 
-void setup_style() {
+void setup_fonts(float dpi_scale) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImFontConfig config;
+    config.OversampleH = 2;
+    config.OversampleV = 1;
+
+    // These fonts are part of a standard Windows installation. Keep a
+    // built-in fallback so Paper still starts on a minimal Windows image.
+    ImFont* ui_font = io.Fonts->AddFontFromFileTTF(
+        "C:\\Windows\\Fonts\\segoeui.ttf", 16.0f * dpi_scale, &config,
+        io.Fonts->GetGlyphRangesDefault());
+    g_code_font = io.Fonts->AddFontFromFileTTF(
+        "C:\\Windows\\Fonts\\consola.ttf", 15.0f * dpi_scale, &config,
+        io.Fonts->GetGlyphRangesDefault());
+    if (!ui_font) ui_font = io.Fonts->AddFontDefault();
+    if (!g_code_font) g_code_font = ui_font;
+    io.FontDefault = ui_font;
+}
+
+void setup_style(float dpi_scale) {
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 5.0f;
@@ -283,7 +303,10 @@ void setup_style() {
     style.GrabRounding = 3.0f;
     style.WindowBorderSize = 1.0f;
     style.FrameBorderSize = 0.0f;
-    style.ItemSpacing = ImVec2(7.0f, 5.0f);
+    style.ItemSpacing = ImVec2(8.0f, 7.0f);
+    style.FramePadding = ImVec2(7.0f, 5.0f);
+    style.ScrollbarSize = 16.0f;
+    style.ScaleAllSizes(dpi_scale);
     auto& colors = style.Colors;
     colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.065f, 0.085f, 1.0f);
     colors[ImGuiCol_ChildBg] = ImVec4(0.045f, 0.055f, 0.072f, 1.0f);
@@ -473,6 +496,7 @@ void draw_functions(UiState& state) {
     if (ImGui::InputTextWithHint("##function_filter", "Filter functions...", state.function_filter.data(), state.function_filter.size()))
         refresh_functions(state);
     ImGui::Separator();
+    ImGui::PushFont(g_code_font);
     ImGui::BeginChild("function_list", ImVec2(0, 0), false);
     for (std::size_t index = 0; index < state.functions.size(); ++index) {
         const auto address = json_string(state.functions[index], "address");
@@ -485,6 +509,7 @@ void draw_functions(UiState& state) {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%s", name.c_str(), address.c_str());
     }
     ImGui::EndChild();
+    ImGui::PopFont();
     ImGui::End();
 }
 
@@ -498,9 +523,11 @@ ImVec4 instruction_color(std::string_view kind) {
 
 void draw_disassembly(UiState& state) {
     ImGui::Begin("IDA View-A");
+    ImGui::PushFont(g_code_font);
     if (!state.has_image) {
         ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "Open a PE image to begin analysis");
         ImGui::TextDisabled("Ctrl+O   Open   |   X   Xrefs   |   Ctrl+Shift+F   CFG   |   F1   AI/MCP");
+        ImGui::PopFont();
         ImGui::End();
         return;
     }
@@ -555,12 +582,14 @@ void draw_disassembly(UiState& state) {
         ImGui::EndTabBar();
     }
     state.center_selection_request = -1;
+    ImGui::PopFont();
     ImGui::End();
 }
 
 void draw_side(UiState& state) {
     if (!state.show_side) return;
     ImGui::Begin("Xrefs / Properties", &state.show_side);
+    ImGui::PushFont(g_code_font);
     if (ImGui::BeginTabBar("side_views")) {
         if (ImGui::BeginTabItem("Xrefs", nullptr, state.side_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
             for (const auto& reference : state.incoming_xrefs) {
@@ -591,6 +620,7 @@ void draw_side(UiState& state) {
         ImGui::EndTabBar();
     }
     state.side_selection_request = -1;
+    ImGui::PopFont();
     ImGui::End();
 }
 
@@ -706,7 +736,7 @@ LRESULT WINAPI wnd_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_para
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
-    SetProcessDPIAware();
+    ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW window_class{sizeof(WNDCLASSEXW), CS_CLASSDC, wnd_proc, 0L, 0L, instance, nullptr, nullptr, nullptr, nullptr, L"PaperImGui", nullptr};
     RegisterClassExW(&window_class);
     HWND window = CreateWindowW(window_class.lpszClassName, L"Paper — IDA-style Static Analysis",
@@ -727,7 +757,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     io.IniFilename = "paper_imgui_v3.ini";
-    setup_style();
+    const float dpi_scale = std::clamp(ImGui_ImplWin32_GetDpiScaleForHwnd(window), 1.0f, 2.0f);
+    setup_fonts(dpi_scale);
+    setup_style(dpi_scale);
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(g_device, g_device_context);
 
