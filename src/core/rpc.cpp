@@ -320,6 +320,30 @@ Json McpServer::tool_list() const {
     }
     {
         Json properties = Json::object();
+        properties["function_address"] = schema_string();
+        properties["address"] = schema_string();
+        tools.push_back(tool("function_signature", "Return only ABI facts and exact stack slots for one function; no guessed C/C++ types.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["function_address"] = schema_string();
+        properties["address"] = schema_string();
+        tools.push_back(tool("object_fields", "List exact register-relative object/field memory offsets observed in one function.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["function_address"] = schema_string();
+        properties["address"] = schema_string();
+        tools.push_back(tool("function_xrefs", "Return incoming, outgoing, and string references for one function.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["function_address"] = schema_string();
+        properties["address"] = schema_string();
+        tools.push_back(tool("analyze_function", "Run the fast single-function bundle: CFG, dataflow, stack slots, signature, fields, xrefs, strings, and switches.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
         properties["query"] = schema_string();
         properties["limit"] = schema_number();
         tools.push_back(tool("list_noreturn_functions", "List functions proven to terminate by known APIs, wrappers, or traps.", std::move(properties)));
