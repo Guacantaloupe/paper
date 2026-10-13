@@ -546,6 +546,10 @@ Json Analyzer::list_sections() const {
     return result;
 }
 
+Json Analyzer::list_segments() const {
+    return list_sections();
+}
+
 Json Analyzer::list_functions(const Json& arguments) const {
     std::shared_lock lock(mutex_);
     const auto offset = argument_size(arguments, "offset", 0);
@@ -1102,6 +1106,7 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
     ok = true;
     if (name == "module_info") return module_info();
     if (name == "list_sections") return list_sections();
+    if (name == "list_segments") return list_segments();
     if (name == "list_functions") return list_functions(arguments);
     if (name == "get_function") return get_function(arguments);
     if (name == "disassemble") return disassemble(arguments);
