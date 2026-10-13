@@ -51,6 +51,14 @@ std::string simple_mnemonic(std::uint8_t opcode, bool two_byte) {
     }
 }
 
+const char* register_name(std::uint8_t index) {
+    static constexpr const char* names[] = {
+        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"
+    };
+    return index < 16 ? names[index] : "";
+}
+
 #ifdef PAPER_WITH_ZYDIS
 bool decode_with_zydis(Address address, std::span<const std::uint8_t> bytes, Instruction& result) {
     thread_local ZydisDecoder decoder;
@@ -149,10 +157,14 @@ Instruction X86Decoder::decode(Address address, std::span<const std::uint8_t> by
 
     std::size_t cursor = 0;
     bool rex_w = false;
+    std::uint8_t rex = 0;
     bool address32 = false;
     while (cursor < bytes.size() && cursor < 15 && is_prefix(bytes[cursor])) {
         const auto prefix = bytes[cursor++];
-        rex_w = rex_w || (prefix >= 0x48 && prefix <= 0x4f);
+        if (prefix >= 0x40 && prefix <= 0x4f) {
+            rex = prefix;
+            rex_w = rex_w || (prefix & 0x08) != 0;
+        }
         address32 = address32 || prefix == 0x67;
     }
     if (cursor >= bytes.size()) {
@@ -174,7 +186,7 @@ Instruction X86Decoder::decode(Address address, std::span<const std::uint8_t> by
     ModrmInfo modrm{};
     bool modrm_present = has_modrm(opcode, two_byte);
     if (modrm_present && cursor < bytes.size()) {
-        modrm = parse_modrm(bytes, cursor, address32);
+        modrm = parse_modrm(bytes, cursor, address32, rex);
         cursor += modrm.length;
     }
 
@@ -204,6 +216,51 @@ Instruction X86Decoder::decode(Address address, std::span<const std::uint8_t> by
     cursor += immediate;
     result.length = static_cast<std::uint8_t>(std::max<std::size_t>(1, cursor));
     result.mnemonic = simple_mnemonic(opcode, two_byte);
+    if (!two_byte && (opcode == 0x80 || opcode == 0x81 || opcode == 0x82 || opcode == 0x83) && modrm_present) {
+        static constexpr const char* group1[] = {"add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"};
+        if (modrm.reg < 8) result.mnemonic = group1[modrm.reg];
+    } else if (!two_byte && (opcode == 0x31 || opcode == 0x33 || opcode == 0x30 || opcode == 0x32)) {
+        result.mnemonic = "xor";
+    }
+    if (immediate != 0) result.immediate = read_unsigned(bytes, length_before_imm, immediate);
+
+    if (modrm_present && modrm.mod != 3) {
+        if (modrm.has_base) result.memory_base = register_name(modrm.base);
+        if (modrm.has_index) result.memory_index = register_name(modrm.index);
+        result.memory_scale = modrm.scale;
+        result.memory_displacement = modrm.displacement;
+    }
+    const auto set_binary_registers = [&](bool destination_is_rm, bool memory_read, bool memory_write) {
+        if (!modrm_present) return;
+        result.memory_read = memory_read && modrm.mod != 3;
+        result.memory_write = memory_write && modrm.mod != 3;
+        if (modrm.mod == 3) {
+            if (destination_is_rm) {
+                result.destination_register = register_name(modrm.rm);
+                result.source_register = register_name(modrm.reg);
+            } else {
+                result.destination_register = register_name(modrm.reg);
+                result.source_register = register_name(modrm.rm);
+            }
+        } else if (!destination_is_rm) {
+            result.destination_register = register_name(modrm.reg);
+        } else {
+            result.source_register = register_name(modrm.reg);
+        }
+    };
+    if (!two_byte) {
+        if (opcode >= 0xb8 && opcode <= 0xbf) result.destination_register = register_name(static_cast<std::uint8_t>((opcode - 0xb8) | ((rex & 1) ? 8 : 0)));
+        else if (opcode == 0x89 || opcode == 0x88) set_binary_registers(true, false, true);
+        else if (opcode == 0x8b || opcode == 0x8a) set_binary_registers(false, true, false);
+        else if (opcode == 0x8d) {
+            if (modrm_present) result.destination_register = register_name(modrm.reg);
+        } else if (opcode == 0x31 || opcode == 0x30) set_binary_registers(true, false, false);
+        else if (opcode == 0x33 || opcode == 0x32) set_binary_registers(false, true, false);
+        else if (opcode == 0xc7 && modrm_present && modrm.mod == 3) result.destination_register = register_name(modrm.rm);
+        else if ((opcode == 0x81 || opcode == 0x83) && modrm_present && modrm.mod == 3) result.destination_register = register_name(modrm.rm);
+        if (opcode == 0xff && modrm_present && modrm.mod == 3 && (modrm.reg == 2 || modrm.reg == 3 || modrm.reg == 4 || modrm.reg == 5)) result.source_register = register_name(modrm.rm);
+        if (opcode == 0xff && modrm_present && modrm.mod != 3 && (modrm.reg == 2 || modrm.reg == 3 || modrm.reg == 4 || modrm.reg == 5)) result.memory_read = true;
+    }
 
     const bool short_conditional = !two_byte && ((opcode >= 0x70 && opcode <= 0x7f) || (opcode >= 0xe0 && opcode <= 0xe3));
     const bool near_conditional = two_byte && opcode >= 0x80 && opcode <= 0x8f;
@@ -248,6 +305,11 @@ Instruction X86Decoder::decode(Address address, std::span<const std::uint8_t> by
         result.rip_relative = true;
         result.target = address + result.length + static_cast<std::int64_t>(modrm.displacement);
         if (result.operands.empty()) result.operands = "[rip+" + hex_address(*result.target) + "]";
+    } else if (modrm_present && modrm.mod != 3 && !modrm.has_base && !modrm.rip_relative) {
+        // A SIB base=5 with mod=0 is an absolute disp32 memory operand in
+        // long mode. Keeping it as a target is useful for jump-table and
+        // pointer-slot recovery, while callers still require a mapped address.
+        result.target = static_cast<Address>(static_cast<std::int64_t>(modrm.displacement));
     }
     if (result.operands.empty() && result.mnemonic != "nop" && result.mnemonic != "ret" && result.mnemonic != "int3") {
         result.operands = modrm_present ? "..." : "";
@@ -295,33 +357,49 @@ std::size_t X86Decoder::immediate_size(std::uint8_t opcode, bool two_byte, bool,
     }
 }
 
-X86Decoder::ModrmInfo X86Decoder::parse_modrm(std::span<const std::uint8_t> bytes, std::size_t offset, bool address32) {
+X86Decoder::ModrmInfo X86Decoder::parse_modrm(std::span<const std::uint8_t> bytes, std::size_t offset, bool address32, std::uint8_t rex) {
     ModrmInfo info;
     if (offset >= bytes.size()) return info;
     const std::uint8_t modrm = bytes[offset];
     info.length = 1;
     info.mod = static_cast<std::uint8_t>(modrm >> 6);
-    info.reg = static_cast<std::uint8_t>((modrm >> 3) & 7);
-    info.rm = static_cast<std::uint8_t>(modrm & 7);
-    if (info.mod != 3 && info.rm == 4) {
+    info.reg = static_cast<std::uint8_t>(((modrm >> 3) & 7) | ((rex & 4) ? 8 : 0));
+    info.rm = static_cast<std::uint8_t>((modrm & 7) | ((rex & 1) ? 8 : 0));
+    if (info.mod != 3 && (info.rm & 7) == 4) {
         if (offset + info.length >= bytes.size()) return info;
         const std::uint8_t sib = bytes[offset + info.length++];
-        const std::uint8_t base = sib & 7;
-        if (info.mod == 0 && base == 5) {
+        const std::uint8_t base_low = sib & 7;
+        const std::uint8_t index_low = static_cast<std::uint8_t>((sib >> 3) & 7);
+        info.scale = static_cast<std::uint8_t>(1u << (sib >> 6));
+        info.index = static_cast<std::uint8_t>(index_low | ((rex & 2) ? 8 : 0));
+        info.has_index = index_low != 4 || (rex & 2) != 0;
+        info.base = static_cast<std::uint8_t>(base_low | ((rex & 1) ? 8 : 0));
+        if (info.mod == 0 && base_low == 5 && (rex & 1) == 0) {
             if (offset + info.length + 4 <= bytes.size()) {
                 info.displacement = static_cast<std::int32_t>(read_unsigned(bytes, offset + info.length, 4));
             }
             info.length += 4;
+        } else {
+            info.has_base = true;
         }
-    } else if (info.mod == 0 && info.rm == 5 && !address32) {
+    } else if (info.mod == 0 && (info.rm & 7) == 5 && !address32 && (rex & 1) == 0) {
         info.rip_relative = true;
         if (offset + info.length + 4 <= bytes.size()) {
             info.displacement = static_cast<std::int32_t>(read_unsigned(bytes, offset + info.length, 4));
         }
         info.length += 4;
+    } else if (info.mod != 3) {
+        info.base = info.rm;
+        info.has_base = true;
     }
-    if (info.mod == 1) info.length += 1;
-    if (info.mod == 2) info.length += 4;
+    if (info.mod == 1) {
+        if (offset + info.length < bytes.size()) info.displacement = static_cast<std::int8_t>(bytes[offset + info.length]);
+        info.length += 1;
+    }
+    if (info.mod == 2) {
+        if (offset + info.length + 4 <= bytes.size()) info.displacement = static_cast<std::int32_t>(read_unsigned(bytes, offset + info.length, 4));
+        info.length += 4;
+    }
     return info;
 }
 
