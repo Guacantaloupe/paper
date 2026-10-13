@@ -1275,7 +1275,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW window_class{sizeof(WNDCLASSEXW), CS_CLASSDC, wnd_proc, 0L, 0L, instance, nullptr, nullptr, nullptr, nullptr, L"PaperImGui", nullptr};
     RegisterClassExW(&window_class);
-    HWND window = CreateWindowW(window_class.lpszClassName, L"Paper — IDA-style Static Analysis",
+    HWND window = CreateWindowW(window_class.lpszClassName, L"Paper — 逆向静态分析",
                                 WS_OVERLAPPEDWINDOW, 80, 60, 1680, 1000, nullptr, nullptr, instance, nullptr);
     if (!window || !create_device_d3d(window)) {
         cleanup_device_d3d();
