@@ -72,6 +72,10 @@ std::vector<std::uint8_t> make_fixture() {
     std::memcpy(bytes.data() + 0x680, "KERNEL32.dll\0", 13);
     bytes[0x690] = 0; bytes[0x691] = 0;
     std::memcpy(bytes.data() + 0x692, "ExitProcess\0", 12);
+    // A small typed-structure fixture in .rdata: FourCC/tag, count, pointer.
+    bytes[0x420] = 'L'; bytes[0x421] = 'V'; bytes[0x422] = 'L'; bytes[0x423] = '0';
+    put32(bytes, 0x424, 60);
+    put64(bytes, 0x428, 0x140001000ull);
     return bytes;
 }
 
@@ -102,11 +106,36 @@ int main() {
     assert(ref.find("symbol") && ref.find("symbol")->as_string() == "KERNEL32.dll!ExitProcess");
     assert(ref.find("instruction") && ref.find("instruction")->find("mnemonic"));
     assert(ref.find("function") && ref.find("function")->find("start"));
+    paper::Json struct_args = paper::Json::object();
+    struct_args["address"] = "0x140002020";
+    struct_args["layout"] = paper::Json::array();
+    paper::Json tag_field = paper::Json::array(); tag_field.push_back("u32"); tag_field.push_back("tag");
+    paper::Json count_field = paper::Json::array(); count_field.push_back("u32"); count_field.push_back("count");
+    paper::Json entries_field = paper::Json::array(); entries_field.push_back("u64[]"); entries_field.push_back("entries");
+    struct_args["layout"].push_back(std::move(tag_field));
+    struct_args["layout"].push_back(std::move(count_field));
+    struct_args["layout"].push_back(std::move(entries_field));
+    struct_args["entries_count"] = static_cast<std::uint64_t>(1);
+    const auto structure = analyzer.read_struct(struct_args);
+    assert(structure.find("fields") && structure.find("fields")->find("tag") && structure.find("fields")->find("tag")->as_string() == "LVL0");
+    assert(structure.find("fields")->find("entries")->array_items().front().as_string() == "0x140001000");
+    paper::Json describe_args = paper::Json::object();
+    describe_args["address"] = "0x140003060";
+    const auto described = analyzer.describe_address(describe_args);
+    assert(described.find("is_import_thunk") && described.find("is_import_thunk")->as_bool());
+    assert(described.find("xrefs_to") && described.find("xrefs_to")->as_u64() == 1);
     paper::Json instruction_search = paper::Json::object();
     instruction_search["pattern"] = "call";
     instruction_search["target_in"] = paper::Json::array();
     instruction_search["target_in"].push_back("0x140003060");
     assert(!analyzer.find_instructions(instruction_search).array_items().empty());
+    instruction_search["displacement"] = static_cast<std::int64_t>(0x205a);
+    instruction_search["capture"] = paper::Json::array();
+    instruction_search["capture"].push_back("displacement");
+    assert(!analyzer.find_instructions(instruction_search).array_items().empty());
+    paper::Json all_locations = paper::Json::object();
+    all_locations["all"] = true;
+    assert(analyzer.source_locations(all_locations).find("location_count"));
     paper::Json string_query = paper::Json::object();
     string_query["referenced_only"] = true;
     string_query["offset"] = static_cast<std::uint64_t>(0);
@@ -127,6 +156,7 @@ int main() {
     assert(analyzer.disassemble(batch).is_array());
     assert(analyzer.function_strings(batch).is_array());
     assert(analyzer.function_signature(batch).is_array());
+    assert(analyzer.vtable_of(batch).is_array());
     paper::Json noreturn_args = paper::Json::object();
     noreturn_args["address"] = "0x140001000";
     const auto function_summary = analyzer.get_function(noreturn_args);
@@ -151,6 +181,26 @@ int main() {
     paper::Json search_args = paper::Json::object();
     search_args["pattern"] = "ff ?? 5a";
     assert(analyzer.search_bytes(search_args).array_items().size() == 1);
+    const auto output_path = path.string() + ".scan.json";
+    paper::Json output_args = search_args;
+    output_args["output"] = output_path;
+    bool output_ok = true;
+    const auto output_result = analyzer.call_tool("search_bytes", output_args, output_ok);
+    assert(output_ok && output_result.find("output") && std::filesystem::exists(output_path));
+    std::filesystem::remove(output_path);
+
+    std::string decoder_error;
+    assert(analyzer.register_asset_decoder("mesh", [](std::string_view format, std::string_view path) {
+        paper::Json decoded = paper::Json::object();
+        decoded["format"] = std::string(format);
+        decoded["path"] = std::string(path);
+        decoded["records"] = static_cast<std::uint64_t>(1);
+        return decoded;
+    }, decoder_error));
+    paper::Json asset_args = paper::Json::object();
+    asset_args["format"] = "mesh";
+    asset_args["path"] = "fixture.mesh";
+    assert(analyzer.decode_asset(asset_args).find("decoded"));
 
     paper::Json function_args = paper::Json::object();
     function_args["function_address"] = "0x140001000";
