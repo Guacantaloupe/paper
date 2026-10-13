@@ -29,7 +29,7 @@ When enabled, Zydis is used only behind `X86Decoder`; the function, CFG, xref, a
 
 `paper_ai` speaks newline-delimited JSON-RPC with the MCP method names `initialize`, `tools/list`, and `tools/call`. The available tools include:
 
-`open_binary`, `module_info`, `list_sections`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
+`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, and `analysis_stats`.
 
 An MCP client only needs to register the executable as a local stdio server. The exact executable path depends on the client; no project-specific shell wrapper is required.
 
