@@ -42,6 +42,95 @@ UINT g_resize_height = 0;
 ImFont* g_code_font = nullptr;
 constexpr float kToolbarHeight = 44.0f;
 
+enum class UiLanguage {
+    Chinese,
+    English,
+};
+
+UiLanguage g_ui_language = UiLanguage::Chinese;
+
+const char* ui_text(const char* english) {
+    if (g_ui_language == UiLanguage::English) return english;
+    const std::string_view text(english);
+    if (text == "File") return "文件";
+    if (text == "Open PE...") return "打开 PE...";
+    if (text == "Save analysis database") return "保存分析数据库";
+    if (text == "Reload analysis database") return "重新加载分析数据库";
+    if (text == "Exit") return "退出";
+    if (text == "Navigate") return "导航";
+    if (text == "Back") return "后退";
+    if (text == "Forward") return "前进";
+    if (text == "Entry point") return "入口点";
+    if (text == "Search bytes...") return "搜索字节...";
+    if (text == "Go to address") return "跳转到地址";
+    if (text == "Analysis") return "分析";
+    if (text == "Xrefs") return "交叉引用";
+    if (text == "CFG") return "控制流图";
+    if (text == "Callers") return "调用者";
+    if (text == "Callees") return "被调用者";
+    if (text == "Imports") return "导入";
+    if (text == "Exports") return "导出";
+    if (text == "Segments") return "段";
+    if (text == "Strings") return "字符串";
+    if (text == "Names") return "名称";
+    if (text == "Bookmarks") return "书签";
+    if (text == "AI / MCP help") return "AI / MCP 帮助";
+    if (text == "View") return "视图";
+    if (text == "Functions") return "函数";
+    if (text == "Xrefs / Properties") return "交叉引用 / 属性";
+    if (text == "IDA Lists") return "IDA 列表";
+    if (text == "Search") return "搜索";
+    if (text == "Output") return "输出";
+    if (text == "Language") return "语言";
+    if (text == "Open") return "打开";
+    if (text == "Entry") return "入口";
+    if (text == "Jump") return "跳转";
+    if (text == "0x address") return "0x 地址";
+    if (text == "Lists") return "列表";
+    if (text == "Mark") return "标记";
+    if (text == "Hex") return "十六进制";
+    if (text == "AI") return "AI";
+    if (text == "IDA View-A") return "反汇编视图-A";
+    if (text == "Hex View-1") return "十六进制视图-1";
+    if (text == "Info") return "信息";
+    if (text == "Graph View") return "图视图";
+    if (text == "Address") return "地址";
+    if (text == "Bytes") return "字节";
+    if (text == "Mnemonic") return "指令";
+    if (text == "Operands") return "操作数";
+    if (text == "Comment") return "注释";
+    if (text == "Rename") return "重命名";
+    if (text == "Bookmark") return "书签";
+    if (text == "Properties") return "属性";
+    if (text == "No indexed xrefs at this address.") return "此地址没有已索引的交叉引用。";
+    if (text == "Strings / Names / Imports / Exports / Segments / Bookmarks") return "字符串 / 名称 / 导入 / 导出 / 段 / 书签";
+    if (text == "Filter current list...") return "筛选当前列表...";
+    if (text == "literals") return "个字符串";
+    if (text == "names") return "个名称";
+    if (text == "imports") return "个导入";
+    if (text == "exports") return "个导出";
+    if (text == "segments") return "个段";
+    if (text == "bookmarks") return "个书签";
+    if (text == "Hex pattern (spaces and 0x prefixes are accepted)") return "十六进制模式（支持空格和 0x 前缀）";
+    if (text == "Find") return "查找";
+    if (text == "No search results.") return "没有搜索结果。";
+    if (text == "Filter functions...") return "筛选函数...";
+    if (text == "Open a PE image to begin analysis") return "打开 PE 文件开始分析";
+    if (text == "Run CFG on a function to build the graph.") return "在函数上运行 CFG 以生成图。";
+    if (text == "function return") return "函数返回";
+    if (text == "static analysis") return "静态分析";
+    if (text == "English") return "English";
+    if (text == "Simplified Chinese") return "简体中文";
+    return english;
+}
+
+std::string ui_window(std::string_view id) {
+    std::string title(ui_text(id.data()));
+    title += "###";
+    title += id;
+    return title;
+}
+
 std::string json_string(const Json& value, std::string_view key) {
     const auto* item = value.find(key);
     return item && item->is_string() ? item->as_string() : std::string();
@@ -138,8 +227,8 @@ struct UiState {
     Json properties = Json::object();
     Json cfg = Json::object();
     std::string hex_text;
-    std::string output = "Paper ready — static analysis only, no sample execution.";
-    std::string status = "Open an EXE, DLL, or SYS image to begin.";
+    std::string output = "Paper 已准备就绪——仅进行静态分析，不执行样本。";
+    std::string status = "打开 EXE、DLL 或 SYS 文件开始分析。";
     std::array<char, 256> function_filter{};
     std::array<char, 256> list_filter{};
     std::array<char, 256> name_edit{};
@@ -205,7 +294,7 @@ void refresh_hex(UiState& state, Address address) {
     const auto result = state.analyzer.read_bytes(arguments);
     const auto encoded = json_string(result, "bytes");
     if (encoded.empty()) {
-        state.hex_text = "No bytes available at this address.";
+        state.hex_text = g_ui_language == UiLanguage::Chinese ? "此地址没有可用字节。" : "No bytes available at this address.";
         return;
     }
     const auto base = parse_address(json_string(result, "address")).value_or(address);
@@ -255,7 +344,7 @@ void navigate(UiState& state, Address address, bool add_history = true) {
     state.properties = state.analyzer.get_function(arguments);
     copy_text(state.name_edit, json_string(state.properties, "name"));
     copy_text(state.comment_edit, json_string(state.properties, "comment"));
-    state.status = "Viewing " + address_text(address);
+    state.status = (g_ui_language == UiLanguage::Chinese ? "正在查看 " : "Viewing ") + address_text(address);
 }
 
 void open_binary(UiState& state, const std::string& path) {
@@ -273,10 +362,16 @@ void open_binary(UiState& state, const std::string& path) {
     refresh_functions(state);
     refresh_lists(state);
     const auto stats = state.analyzer.analysis_stats();
-    state.status = "Indexed " + std::to_string(stats.find("function_count") ? stats.find("function_count")->as_u64() : 0) +
-                   " functions, " + std::to_string(stats.find("instruction_count") ? stats.find("instruction_count")->as_u64() : 0) + " instructions";
-    append_log(state, "Loaded " + path + "\n" + state.status + ", " +
-               std::to_string(stats.find("xref_count") ? stats.find("xref_count")->as_u64() : 0) + " xrefs");
+    const auto function_count = stats.find("function_count") ? stats.find("function_count")->as_u64() : 0;
+    const auto instruction_count = stats.find("instruction_count") ? stats.find("instruction_count")->as_u64() : 0;
+    const auto xref_count = stats.find("xref_count") ? stats.find("xref_count")->as_u64() : 0;
+    if (g_ui_language == UiLanguage::Chinese) {
+        state.status = "已索引 " + std::to_string(function_count) + " 个函数，" + std::to_string(instruction_count) + " 条指令";
+        append_log(state, "已加载 " + path + "\n" + state.status + "，" + std::to_string(xref_count) + " 条交叉引用");
+    } else {
+        state.status = "Indexed " + std::to_string(function_count) + " functions, " + std::to_string(instruction_count) + " instructions";
+        append_log(state, "Loaded " + path + "\n" + state.status + ", " + std::to_string(xref_count) + " xrefs");
+    }
     const auto info = state.analyzer.module_info();
     if (const auto entry = parse_address(json_string(info, "entry_point"))) navigate(state, *entry);
 }
@@ -307,7 +402,7 @@ void action_cfg(UiState& state) {
     state.properties = state.cfg;
     state.side_selection_request = 1;
     state.center_selection_request = 3;
-    append_log(state, "CFG refreshed for " + address_text(state.current_address));
+    append_log(state, (g_ui_language == UiLanguage::Chinese ? "已刷新 CFG：" : "CFG refreshed for ") + address_text(state.current_address));
 }
 
 void action_call_graph(UiState& state, std::string direction) {
@@ -316,15 +411,18 @@ void action_call_graph(UiState& state, std::string direction) {
     arguments["function_address"] = address_text(state.current_address);
     arguments["direction"] = direction;
     arguments["depth"] = 2;
-    set_json_property(state, state.analyzer.call_graph(arguments), direction + " graph refreshed");
+    const std::string label = direction == "callers"
+        ? (g_ui_language == UiLanguage::Chinese ? "调用者图已刷新" : "Callers graph refreshed")
+        : (g_ui_language == UiLanguage::Chinese ? "被调用者图已刷新" : "Callees graph refreshed");
+    set_json_property(state, state.analyzer.call_graph(arguments), label);
 }
 
 void action_imports(UiState& state) {
-    if (state.has_image) set_json_property(state, state.analyzer.list_imports(Json::object()), "Imports refreshed");
+    if (state.has_image) set_json_property(state, state.analyzer.list_imports(Json::object()), g_ui_language == UiLanguage::Chinese ? "导入列表已刷新" : "Imports refreshed");
 }
 
 void action_exports(UiState& state) {
-    if (state.has_image) set_json_property(state, state.analyzer.list_exports(Json::object()), "Exports refreshed");
+    if (state.has_image) set_json_property(state, state.analyzer.list_exports(Json::object()), g_ui_language == UiLanguage::Chinese ? "导出列表已刷新" : "Exports refreshed");
 }
 
 void action_lists(UiState& state, int tab = 0) {
@@ -346,14 +444,16 @@ void run_search(UiState& state) {
     arguments["limit"] = 10'000;
     const auto result = state.analyzer.search_bytes(arguments);
     state.search_results.assign(result.array_items().begin(), result.array_items().end());
-    append_log(state, "Byte search returned " + std::to_string(state.search_results.size()) + " result(s)");
+    append_log(state, (g_ui_language == UiLanguage::Chinese ? "字节搜索返回 " : "Byte search returned ") +
+               std::to_string(state.search_results.size()) + (g_ui_language == UiLanguage::Chinese ? " 个结果" : " result(s)"));
 }
 
 void action_save_database(UiState& state) {
     if (!state.has_image) return;
     const auto result = state.analyzer.save_database(Json::object());
     append_log(state, result.find("ok") && result.find("ok")->as_bool() ?
-               "Database saved: " + json_string(result, "path") : "Database save failed: " + json_string(result, "error"));
+               (g_ui_language == UiLanguage::Chinese ? "数据库已保存：" : "Database saved: ") + json_string(result, "path") :
+               (g_ui_language == UiLanguage::Chinese ? "数据库保存失败：" : "Database save failed: ") + json_string(result, "error"));
 }
 
 void action_load_database(UiState& state) {
@@ -363,9 +463,9 @@ void action_load_database(UiState& state) {
         refresh_functions(state);
         refresh_lists(state);
         navigate(state, state.current_address, false);
-        append_log(state, "Database loaded: " + json_string(result, "path"));
+        append_log(state, (g_ui_language == UiLanguage::Chinese ? "数据库已加载：" : "Database loaded: ") + json_string(result, "path"));
     } else {
-        append_log(state, "Database load failed: " + json_string(result, "error"));
+        append_log(state, (g_ui_language == UiLanguage::Chinese ? "数据库加载失败：" : "Database load failed: ") + json_string(result, "error"));
     }
 }
 
@@ -379,8 +479,8 @@ void action_set_name(UiState& state) {
         refresh_functions(state);
         refresh_lists(state);
         navigate(state, state.current_address, false);
-        append_log(state, "Name updated at " + address_text(state.current_address));
-    } else append_log(state, "Name update failed: " + json_string(result, "error"));
+        append_log(state, (g_ui_language == UiLanguage::Chinese ? "名称已更新：" : "Name updated at ") + address_text(state.current_address));
+    } else append_log(state, (g_ui_language == UiLanguage::Chinese ? "名称更新失败：" : "Name update failed: ") + json_string(result, "error"));
 }
 
 void action_set_comment(UiState& state) {
@@ -391,8 +491,8 @@ void action_set_comment(UiState& state) {
     const auto result = state.analyzer.set_comment(arguments);
     if (result.find("ok") && result.find("ok")->as_bool()) {
         navigate(state, state.current_address, false);
-        append_log(state, "Comment updated at " + address_text(state.current_address));
-    } else append_log(state, "Comment update failed: " + json_string(result, "error"));
+        append_log(state, (g_ui_language == UiLanguage::Chinese ? "注释已更新：" : "Comment updated at ") + address_text(state.current_address));
+    } else append_log(state, (g_ui_language == UiLanguage::Chinese ? "注释更新失败：" : "Comment update failed: ") + json_string(result, "error"));
 }
 
 void action_toggle_bookmark(UiState& state) {
@@ -408,8 +508,9 @@ void action_toggle_bookmark(UiState& state) {
     const auto result = state.analyzer.set_bookmark(arguments);
     if (result.find("ok") && result.find("ok")->as_bool()) {
         refresh_lists(state);
-        append_log(state, exists ? "Bookmark removed" : "Bookmark added");
-    } else append_log(state, "Bookmark update failed: " + json_string(result, "error"));
+        append_log(state, exists ? (g_ui_language == UiLanguage::Chinese ? "书签已删除" : "Bookmark removed")
+                                 : (g_ui_language == UiLanguage::Chinese ? "书签已添加" : "Bookmark added"));
+    } else append_log(state, (g_ui_language == UiLanguage::Chinese ? "书签更新失败：" : "Bookmark update failed: ") + json_string(result, "error"));
 }
 
 void action_ai_help(UiState& state) {
@@ -426,6 +527,7 @@ void setup_fonts(float dpi_scale) {
     ImFontConfig config;
     config.OversampleH = 2;
     config.OversampleV = 1;
+    const ImWchar* chinese_ranges = io.Fonts->GetGlyphRangesChineseFull();
 
     // These fonts are part of a standard Windows installation. Keep a
     // built-in fallback so Paper still starts on a minimal Windows image.
@@ -437,6 +539,25 @@ void setup_fonts(float dpi_scale) {
         io.Fonts->GetGlyphRangesDefault());
     if (!ui_font) ui_font = io.Fonts->AddFontDefault();
     if (!g_code_font) g_code_font = ui_font;
+
+    // Merge a Windows CJK font into both faces. This keeps the code font
+    // monospaced for addresses/instructions while allowing Chinese labels,
+    // comments, and user-defined names to render instead of showing boxes.
+    ImFontConfig cjk_config = config;
+    cjk_config.MergeMode = true;
+    const char* cjk_paths[] = {
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\msyh.ttf",
+    };
+    cjk_config.DstFont = ui_font;
+    for (const char* path : cjk_paths) {
+        if (io.Fonts->AddFontFromFileTTF(path, 16.0f * dpi_scale, &cjk_config, chinese_ranges)) break;
+    }
+    cjk_config.DstFont = g_code_font;
+    for (const char* path : cjk_paths) {
+        if (io.Fonts->AddFontFromFileTTF(path, 15.0f * dpi_scale, &cjk_config, chinese_ranges)) break;
+    }
     io.FontDefault = ui_font;
 }
 
@@ -516,56 +637,62 @@ void build_default_layout() {
 
 void draw_menu(UiState& state) {
     if (!ImGui::BeginMainMenuBar()) return;
-    if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Open PE...", "Ctrl+O")) open_binary(state, choose_pe_file());
-        if (ImGui::MenuItem("Save analysis database", "Ctrl+S", false, state.has_image)) action_save_database(state);
-        if (ImGui::MenuItem("Reload analysis database", nullptr, false, state.has_image)) action_load_database(state);
-        if (ImGui::MenuItem("Exit")) PostQuitMessage(0);
+    if (ImGui::BeginMenu(ui_text("File"))) {
+        if (ImGui::MenuItem(ui_text("Open PE..."), "Ctrl+O")) open_binary(state, choose_pe_file());
+        if (ImGui::MenuItem(ui_text("Save analysis database"), "Ctrl+S", false, state.has_image)) action_save_database(state);
+        if (ImGui::MenuItem(ui_text("Reload analysis database"), nullptr, false, state.has_image)) action_load_database(state);
+        if (ImGui::MenuItem(ui_text("Exit"))) PostQuitMessage(0);
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Navigate")) {
-        if (ImGui::MenuItem("Back", "Alt+Left", false, !state.history.empty() && state.history_index > 0)) go_back(state);
-        if (ImGui::MenuItem("Forward", "Alt+Right", false, !state.history.empty() && state.history_index + 1 < state.history.size())) go_forward(state);
+    if (ImGui::BeginMenu(ui_text("Navigate"))) {
+        if (ImGui::MenuItem(ui_text("Back"), "Alt+Left", false, !state.history.empty() && state.history_index > 0)) go_back(state);
+        if (ImGui::MenuItem(ui_text("Forward"), "Alt+Right", false, !state.history.empty() && state.history_index + 1 < state.history.size())) go_forward(state);
         ImGui::Separator();
-        if (ImGui::MenuItem("Entry point", "Home") && state.has_image) {
+        if (ImGui::MenuItem(ui_text("Entry point"), "Home") && state.has_image) {
             const auto info = state.analyzer.module_info();
             if (const auto entry = parse_address(json_string(info, "entry_point"))) navigate(state, *entry);
         }
-        if (ImGui::MenuItem("Search bytes...", "Ctrl+F", false, state.has_image)) action_search(state);
+        if (ImGui::MenuItem(ui_text("Search bytes..."), "Ctrl+F", false, state.has_image)) action_search(state);
         ImGui::SetNextItemWidth(170.0f);
         ImGui::InputText("##goto_menu", state.goto_address.data(), state.goto_address.size(), ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
-        if (ImGui::Button("Go to address")) {
+        if (ImGui::Button(ui_text("Go to address"))) {
             if (const auto address = parse_address(state.goto_address.data())) navigate(state, *address);
         }
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Analysis")) {
-        if (ImGui::MenuItem("Xrefs", "X")) state.side_selection_request = 0;
-        if (ImGui::MenuItem("CFG", "Ctrl+Shift+F")) action_cfg(state);
-        if (ImGui::MenuItem("Callers", "Ctrl+Shift+U")) action_call_graph(state, "callers");
-        if (ImGui::MenuItem("Callees", "Ctrl+Shift+D")) action_call_graph(state, "callees");
+    if (ImGui::BeginMenu(ui_text("Analysis"))) {
+        if (ImGui::MenuItem(ui_text("Xrefs"), "X")) state.side_selection_request = 0;
+        if (ImGui::MenuItem(ui_text("CFG"), "Ctrl+Shift+F")) action_cfg(state);
+        if (ImGui::MenuItem(ui_text("Callers"), "Ctrl+Shift+U")) action_call_graph(state, "callers");
+        if (ImGui::MenuItem(ui_text("Callees"), "Ctrl+Shift+D")) action_call_graph(state, "callees");
         ImGui::Separator();
-        if (ImGui::MenuItem("Imports", "Ctrl+I")) action_imports(state);
-        if (ImGui::MenuItem("Exports", "Ctrl+E")) action_exports(state);
-        if (ImGui::MenuItem("Strings", "Ctrl+Shift+S")) action_lists(state, 0);
-        if (ImGui::MenuItem("Names", "Shift+F4")) action_lists(state, 1);
-        if (ImGui::MenuItem("Bookmarks", "Ctrl+B")) action_lists(state, 5);
-        if (ImGui::MenuItem("AI / MCP help", "F1")) action_ai_help(state);
+        if (ImGui::MenuItem(ui_text("Imports"), "Ctrl+I")) action_imports(state);
+        if (ImGui::MenuItem(ui_text("Exports"), "Ctrl+E")) action_exports(state);
+        if (ImGui::MenuItem(ui_text("Strings"), "Ctrl+Shift+S")) action_lists(state, 0);
+        if (ImGui::MenuItem(ui_text("Names"), "Shift+F4")) action_lists(state, 1);
+        if (ImGui::MenuItem(ui_text("Bookmarks"), "Ctrl+B")) action_lists(state, 5);
+        if (ImGui::MenuItem(ui_text("AI / MCP help"), "F1")) action_ai_help(state);
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("Functions", nullptr, &state.show_functions);
-        ImGui::MenuItem("Xrefs / Properties", nullptr, &state.show_side);
-        ImGui::MenuItem("IDA Lists", nullptr, &state.show_lists);
-        ImGui::MenuItem("Search", nullptr, &state.show_search);
-        ImGui::MenuItem("Output", nullptr, &state.show_output);
+    if (ImGui::BeginMenu(ui_text("View"))) {
+        ImGui::MenuItem(ui_text("Functions"), nullptr, &state.show_functions);
+        ImGui::MenuItem(ui_text("Xrefs / Properties"), nullptr, &state.show_side);
+        ImGui::MenuItem(ui_text("IDA Lists"), nullptr, &state.show_lists);
+        ImGui::MenuItem(ui_text("Search"), nullptr, &state.show_search);
+        ImGui::MenuItem(ui_text("Output"), nullptr, &state.show_output);
+        if (ImGui::BeginMenu(ui_text("Language"))) {
+            const bool chinese = g_ui_language == UiLanguage::Chinese;
+            if (ImGui::MenuItem(ui_text("Simplified Chinese"), nullptr, chinese)) g_ui_language = UiLanguage::Chinese;
+            if (ImGui::MenuItem(ui_text("English"), nullptr, !chinese)) g_ui_language = UiLanguage::English;
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
     ImGui::SameLine(ImGui::GetWindowWidth() - 300.0f);
     ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "PAPER");
     ImGui::SameLine();
-    ImGui::TextDisabled("static analysis");
+    ImGui::TextDisabled("%s", ui_text("static analysis"));
     ImGui::EndMainMenuBar();
 }
 
@@ -612,13 +739,13 @@ void draw_toolbar(UiState& state) {
         ImGui::End();
         return;
     }
-    if (ImGui::Button("Open")) open_binary(state, choose_pe_file());
+    if (ImGui::Button(ui_text("Open"))) open_binary(state, choose_pe_file());
     ImGui::SameLine();
     if (ImGui::Button("<")) go_back(state);
     ImGui::SameLine();
     if (ImGui::Button(">")) go_forward(state);
     ImGui::SameLine();
-    if (ImGui::Button("Entry")) {
+    if (ImGui::Button(ui_text("Entry"))) {
         const auto info = state.analyzer.module_info();
         if (const auto entry = parse_address(json_string(info, "entry_point"))) navigate(state, *entry);
     }
@@ -628,41 +755,42 @@ void draw_toolbar(UiState& state) {
         ImGui::SetKeyboardFocusHere();
         state.focus_goto = false;
     }
-    ImGui::InputTextWithHint("##goto_toolbar", "0x address", state.goto_address.data(), state.goto_address.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::InputTextWithHint("##goto_toolbar", ui_text("0x address"), state.goto_address.data(), state.goto_address.size(), ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
-    if (ImGui::Button("Jump")) {
+    if (ImGui::Button(ui_text("Jump"))) {
         if (const auto address = parse_address(state.goto_address.data())) navigate(state, *address);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Xrefs")) state.side_selection_request = 0;
+    if (ImGui::Button(ui_text("Xrefs"))) state.side_selection_request = 0;
     ImGui::SameLine();
-    if (ImGui::Button("CFG")) action_cfg(state);
+    if (ImGui::Button(ui_text("CFG"))) action_cfg(state);
     ImGui::SameLine();
-    if (ImGui::Button("Callers")) action_call_graph(state, "callers");
+    if (ImGui::Button(ui_text("Callers"))) action_call_graph(state, "callers");
     ImGui::SameLine();
-    if (ImGui::Button("Callees")) action_call_graph(state, "callees");
+    if (ImGui::Button(ui_text("Callees"))) action_call_graph(state, "callees");
     ImGui::SameLine();
-    if (ImGui::Button("Imports")) action_imports(state);
+    if (ImGui::Button(ui_text("Imports"))) action_imports(state);
     ImGui::SameLine();
-    if (ImGui::Button("Exports")) action_exports(state);
+    if (ImGui::Button(ui_text("Exports"))) action_exports(state);
     ImGui::SameLine();
-    if (ImGui::Button("Lists")) action_lists(state);
+    if (ImGui::Button(ui_text("Lists"))) action_lists(state);
     ImGui::SameLine();
-    if (ImGui::Button("Search")) action_search(state);
+    if (ImGui::Button(ui_text("Search"))) action_search(state);
     ImGui::SameLine();
-    if (ImGui::Button("Mark")) action_toggle_bookmark(state);
+    if (ImGui::Button(ui_text("Mark"))) action_toggle_bookmark(state);
     ImGui::SameLine();
-    if (ImGui::Button("Hex")) state.center_selection_request = 1;
+    if (ImGui::Button(ui_text("Hex"))) state.center_selection_request = 1;
     ImGui::SameLine();
-    if (ImGui::Button("AI")) action_ai_help(state);
+    if (ImGui::Button(ui_text("AI"))) action_ai_help(state);
     ImGui::End();
 }
 
 void draw_functions(UiState& state) {
     if (!state.show_functions) return;
-    ImGui::Begin("Functions", &state.show_functions);
-    ImGui::TextDisabled("%zu indexed functions", state.functions.size());
-    if (ImGui::InputTextWithHint("##function_filter", "Filter functions...", state.function_filter.data(), state.function_filter.size()))
+    const auto title = ui_window("Functions");
+    ImGui::Begin(title.c_str(), &state.show_functions);
+    ImGui::TextDisabled(g_ui_language == UiLanguage::Chinese ? "%zu 个已索引函数" : "%zu indexed functions", state.functions.size());
+    if (ImGui::InputTextWithHint("##function_filter", ui_text("Filter functions..."), state.function_filter.data(), state.function_filter.size()))
         refresh_functions(state);
     ImGui::Separator();
     ImGui::PushFont(g_code_font);
@@ -693,7 +821,7 @@ ImVec4 instruction_color(std::string_view kind) {
 void draw_cfg_graph(UiState& state) {
     const auto* blocks = state.cfg.find("blocks");
     if (!blocks || !blocks->is_array() || blocks->array_items().empty()) {
-        ImGui::TextDisabled("Run CFG on a function to build the graph.");
+        ImGui::TextDisabled("%s", ui_text("Run CFG on a function to build the graph."));
         return;
     }
     ImGui::BeginChild("cfg_canvas", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
@@ -745,12 +873,12 @@ void draw_cfg_graph(UiState& state) {
         draw_list->AddText(g_code_font, 14.0f, ImVec2(position.position.x + 10.0f, position.position.y + 10.0f), IM_COL32(220, 238, 250, 255), label.c_str());
         const auto* successors = block.find("successors");
         const auto successor_count = successors && successors->is_array() ? successors->array_items().size() : 0;
-        const auto summary = "successors: " + std::to_string(successor_count);
+        const auto summary = (g_ui_language == UiLanguage::Chinese ? "后继边：" : "successors: ") + std::to_string(successor_count);
         draw_list->AddText(g_code_font, 13.0f, ImVec2(position.position.x + 10.0f, position.position.y + 36.0f), IM_COL32(155, 180, 200, 255), summary.c_str());
         ImGui::SetCursorScreenPos(position.position);
         ImGui::PushID(static_cast<int>(index));
         if (ImGui::InvisibleButton("cfg_node", ImVec2(node_width, node_height))) navigate(state, position.address);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Jump to %s", json_string(block, "start").c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s %s", g_ui_language == UiLanguage::Chinese ? "跳转到" : "Jump to", json_string(block, "start").c_str());
         ImGui::PopID();
     }
     const auto rows = (positions.size() + columns - 1) / columns;
@@ -759,25 +887,28 @@ void draw_cfg_graph(UiState& state) {
 }
 
 void draw_disassembly(UiState& state) {
-    ImGui::Begin("IDA View-A");
+    const auto title = ui_window("IDA View-A");
+    ImGui::Begin(title.c_str());
     ImGui::PushFont(g_code_font);
     if (!state.has_image) {
-        ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "Open a PE image to begin analysis");
-        ImGui::TextDisabled("Ctrl+O   Open   |   X   Xrefs   |   Ctrl+Shift+F   CFG   |   F1   AI/MCP");
+        ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "%s", ui_text("Open a PE image to begin analysis"));
+        ImGui::TextDisabled("%s", g_ui_language == UiLanguage::Chinese
+            ? "Ctrl+O 打开 | X 交叉引用 | Ctrl+Shift+F 控制流图 | F1 AI/MCP"
+            : "Ctrl+O   Open   |   X   Xrefs   |   Ctrl+Shift+F   CFG   |   F1   AI/MCP");
         ImGui::PopFont();
         ImGui::End();
         return;
     }
     if (ImGui::BeginTabBar("center_views")) {
-        if (ImGui::BeginTabItem("IDA View-A", nullptr, state.center_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem(ui_text("IDA View-A"), nullptr, state.center_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
             if (ImGui::BeginTable("disassembly", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                                              ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
                                   ImVec2(0, 0))) {
-                ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 115.0f);
-                ImGui::TableSetupColumn("Bytes", ImGuiTableColumnFlags_WidthFixed, 185.0f);
-                ImGui::TableSetupColumn("Mnemonic", ImGuiTableColumnFlags_WidthFixed, 105.0f);
-                ImGui::TableSetupColumn("Operands", ImGuiTableColumnFlags_WidthStretch, 220.0f);
-                ImGui::TableSetupColumn("Comment", ImGuiTableColumnFlags_WidthStretch, 180.0f);
+                ImGui::TableSetupColumn(ui_text("Address"), ImGuiTableColumnFlags_WidthFixed, 115.0f);
+                ImGui::TableSetupColumn(ui_text("Bytes"), ImGuiTableColumnFlags_WidthFixed, 185.0f);
+                ImGui::TableSetupColumn(ui_text("Mnemonic"), ImGuiTableColumnFlags_WidthFixed, 105.0f);
+                ImGui::TableSetupColumn(ui_text("Operands"), ImGuiTableColumnFlags_WidthStretch, 220.0f);
+                ImGui::TableSetupColumn(ui_text("Comment"), ImGuiTableColumnFlags_WidthStretch, 180.0f);
                 ImGui::TableHeadersRow();
                 for (const auto& instruction : state.instructions) {
                     const auto address = json_string(instruction, "address");
@@ -803,7 +934,7 @@ void draw_disassembly(UiState& state) {
                     if (!name.empty()) ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f), "%s", name.c_str());
                     else if (!target.empty()) ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.95f, 1.0f), "-> %s", target.c_str());
                     else if (!comment.empty()) ImGui::TextDisabled("; %s", comment.c_str());
-                    else if (kind == "return") ImGui::TextDisabled("function return");
+                    else if (kind == "return") ImGui::TextDisabled("%s", ui_text("function return"));
                     if (!comment.empty() && !name.empty()) ImGui::SameLine();
                     if (!comment.empty() && !name.empty()) ImGui::TextDisabled("; %s", comment.c_str());
                 }
@@ -811,18 +942,18 @@ void draw_disassembly(UiState& state) {
             }
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Hex View-1", nullptr, state.center_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem(ui_text("Hex View-1"), nullptr, state.center_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
             ImGui::BeginChild("hex_view", ImVec2(0, 0), false);
             ImGui::TextUnformatted(state.hex_text.c_str());
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Info", nullptr, state.center_selection_request == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem(ui_text("Info"), nullptr, state.center_selection_request == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
             const auto info = state.analyzer.module_info();
             ImGui::TextUnformatted(info.dump().c_str());
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Graph View", nullptr, state.center_selection_request == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem(ui_text("Graph View"), nullptr, state.center_selection_request == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
             draw_cfg_graph(state);
             ImGui::EndTabItem();
         }
@@ -835,10 +966,11 @@ void draw_disassembly(UiState& state) {
 
 void draw_side(UiState& state) {
     if (!state.show_side) return;
-    ImGui::Begin("Xrefs / Properties", &state.show_side);
+    const auto title = ui_window("Xrefs / Properties");
+    ImGui::Begin(title.c_str(), &state.show_side);
     ImGui::PushFont(g_code_font);
     if (ImGui::BeginTabBar("side_views")) {
-        if (ImGui::BeginTabItem("Xrefs", nullptr, state.side_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem(ui_text("Xrefs"), nullptr, state.side_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
             for (const auto& reference : state.incoming_xrefs) {
                 const auto from = json_string(reference, "from");
                 const auto symbol = json_string(reference, "symbol");
@@ -855,25 +987,25 @@ void draw_side(UiState& state) {
                     if (const auto address = parse_address(to)) navigate(state, *address);
                 }
             }
-            if (state.incoming_xrefs.empty() && state.outgoing_xrefs.empty()) ImGui::TextDisabled("No indexed xrefs at this address.");
+            if (state.incoming_xrefs.empty() && state.outgoing_xrefs.empty()) ImGui::TextDisabled("%s", ui_text("No indexed xrefs at this address."));
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Properties", nullptr, state.side_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabItem(ui_text("Properties"), nullptr, state.side_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
             ImGui::BeginChild("properties_view", ImVec2(0, 0), false);
             if (state.has_image && state.current_address) {
                 ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "%s", address_text(state.current_address).c_str());
                 ImGui::SetNextItemWidth(-92.0f);
                 ImGui::InputText("##name_edit", state.name_edit.data(), state.name_edit.size());
                 ImGui::SameLine();
-                if (ImGui::Button("Rename")) action_set_name(state);
+                if (ImGui::Button(ui_text("Rename"))) action_set_name(state);
                 ImGui::SetNextItemWidth(-92.0f);
                 ImGui::InputText("##comment_edit", state.comment_edit.data(), state.comment_edit.size());
                 ImGui::SameLine();
-                if (ImGui::Button("Comment")) action_set_comment(state);
+                if (ImGui::Button(ui_text("Comment"))) action_set_comment(state);
                 ImGui::SetNextItemWidth(-92.0f);
                 ImGui::InputText("##bookmark_edit", state.bookmark_edit.data(), state.bookmark_edit.size());
                 ImGui::SameLine();
-                if (ImGui::Button("Bookmark")) action_toggle_bookmark(state);
+                if (ImGui::Button(ui_text("Bookmark"))) action_toggle_bookmark(state);
                 ImGui::Separator();
             }
             ImGui::TextUnformatted(state.properties.dump().c_str());
@@ -889,14 +1021,15 @@ void draw_side(UiState& state) {
 
 void draw_lists(UiState& state) {
     if (!state.show_lists) return;
-    ImGui::Begin("IDA Lists", &state.show_lists);
-    ImGui::TextDisabled("Strings / Names / Imports / Exports / Segments / Bookmarks");
-    if (ImGui::InputTextWithHint("##list_filter", "Filter current list...", state.list_filter.data(), state.list_filter.size())) refresh_lists(state);
+    const auto title = ui_window("IDA Lists");
+    ImGui::Begin(title.c_str(), &state.show_lists);
+    ImGui::TextDisabled("%s", ui_text("Strings / Names / Imports / Exports / Segments / Bookmarks"));
+    if (ImGui::InputTextWithHint("##list_filter", ui_text("Filter current list..."), state.list_filter.data(), state.list_filter.size())) refresh_lists(state);
     ImGui::Separator();
     ImGui::PushFont(g_code_font);
     if (ImGui::BeginTabBar("ida_lists_tabs")) {
-        if (ImGui::BeginTabItem("Strings", nullptr, state.list_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
-            ImGui::TextDisabled("%zu literals", state.strings.size());
+        if (ImGui::BeginTabItem(ui_text("Strings"), nullptr, state.list_selection_request == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled(g_ui_language == UiLanguage::Chinese ? "%zu 个字符串" : "%zu literals", state.strings.size());
             ImGui::BeginChild("strings_list", ImVec2(0, 0), false);
             for (std::size_t index = 0; index < state.strings.size(); ++index) {
                 const auto address = json_string(state.strings[index], "address");
@@ -910,8 +1043,8 @@ void draw_lists(UiState& state) {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Names", nullptr, state.list_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
-            ImGui::TextDisabled("%zu names", state.names.size());
+        if (ImGui::BeginTabItem(ui_text("Names"), nullptr, state.list_selection_request == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled(g_ui_language == UiLanguage::Chinese ? "%zu 个名称" : "%zu names", state.names.size());
             ImGui::BeginChild("names_list", ImVec2(0, 0), false);
             for (std::size_t index = 0; index < state.names.size(); ++index) {
                 const auto address = json_string(state.names[index], "address");
@@ -926,8 +1059,8 @@ void draw_lists(UiState& state) {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Imports", nullptr, state.list_selection_request == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
-            ImGui::TextDisabled("%zu imports", state.imports.size());
+        if (ImGui::BeginTabItem(ui_text("Imports"), nullptr, state.list_selection_request == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled(g_ui_language == UiLanguage::Chinese ? "%zu 个导入" : "%zu imports", state.imports.size());
             ImGui::BeginChild("imports_list", ImVec2(0, 0), false);
             for (std::size_t index = 0; index < state.imports.size(); ++index) {
                 const auto thunk = json_string(state.imports[index], "thunk");
@@ -942,8 +1075,8 @@ void draw_lists(UiState& state) {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Exports", nullptr, state.list_selection_request == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
-            ImGui::TextDisabled("%zu exports", state.exports.size());
+        if (ImGui::BeginTabItem(ui_text("Exports"), nullptr, state.list_selection_request == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled(g_ui_language == UiLanguage::Chinese ? "%zu 个导出" : "%zu exports", state.exports.size());
             ImGui::BeginChild("exports_list", ImVec2(0, 0), false);
             for (std::size_t index = 0; index < state.exports.size(); ++index) {
                 const auto address = json_string(state.exports[index], "address");
@@ -957,8 +1090,8 @@ void draw_lists(UiState& state) {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Segments", nullptr, state.list_selection_request == 4 ? ImGuiTabItemFlags_SetSelected : 0)) {
-            ImGui::TextDisabled("%zu segments", state.sections.size());
+        if (ImGui::BeginTabItem(ui_text("Segments"), nullptr, state.list_selection_request == 4 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled(g_ui_language == UiLanguage::Chinese ? "%zu 个段" : "%zu segments", state.sections.size());
             ImGui::BeginChild("segments_list", ImVec2(0, 0), false);
             for (std::size_t index = 0; index < state.sections.size(); ++index) {
                 const auto start = json_string(state.sections[index], "start");
@@ -976,8 +1109,8 @@ void draw_lists(UiState& state) {
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Bookmarks", nullptr, state.list_selection_request == 5 ? ImGuiTabItemFlags_SetSelected : 0)) {
-            ImGui::TextDisabled("%zu bookmarks", state.bookmarks.size());
+        if (ImGui::BeginTabItem(ui_text("Bookmarks"), nullptr, state.list_selection_request == 5 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::TextDisabled(g_ui_language == UiLanguage::Chinese ? "%zu 个书签" : "%zu bookmarks", state.bookmarks.size());
             ImGui::BeginChild("bookmarks_list", ImVec2(0, 0), false);
             for (std::size_t index = 0; index < state.bookmarks.size(); ++index) {
                 const auto address = json_string(state.bookmarks[index], "address");
@@ -1000,12 +1133,13 @@ void draw_lists(UiState& state) {
 
 void draw_search(UiState& state) {
     if (!state.show_search) return;
-    ImGui::Begin("Search", &state.show_search);
-    ImGui::TextDisabled("Hex pattern (spaces and 0x prefixes are accepted)");
+    const auto title = ui_window("Search");
+    ImGui::Begin(title.c_str(), &state.show_search);
+    ImGui::TextDisabled("%s", ui_text("Hex pattern (spaces and 0x prefixes are accepted)"));
     ImGui::SetNextItemWidth(-90.0f);
     const bool enter = ImGui::InputTextWithHint("##search_pattern", "48 8B ??", state.search_pattern.data(), state.search_pattern.size(), ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
-    if (ImGui::Button("Find") || enter) run_search(state);
+    if (ImGui::Button(ui_text("Find")) || enter) run_search(state);
     ImGui::Separator();
     ImGui::PushFont(g_code_font);
     for (std::size_t index = 0; index < state.search_results.size(); ++index) {
@@ -1018,14 +1152,15 @@ void draw_search(UiState& state) {
         }
         ImGui::PopID();
     }
-    if (state.search_results.empty()) ImGui::TextDisabled("No search results.");
+    if (state.search_results.empty()) ImGui::TextDisabled("%s", ui_text("No search results."));
     ImGui::PopFont();
     ImGui::End();
 }
 
 void draw_output(UiState& state) {
     if (!state.show_output) return;
-    ImGui::Begin("Output", &state.show_output);
+    const auto title = ui_window("Output");
+    ImGui::Begin(title.c_str(), &state.show_output);
     ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "%s", state.status.c_str());
     ImGui::Separator();
     ImGui::BeginChild("output_text", ImVec2(0, 0), false);
