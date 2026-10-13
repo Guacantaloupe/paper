@@ -11,6 +11,7 @@ Paper is a Windows PE static-analysis application built with C++20, Dear ImGui, 
 - Address navigation, byte search, hexadecimal view, and properties
 - User names, comments, bookmarks, and sidecar analysis databases
 - Dear ImGui docking layout with an IDA-inspired workflow
+- Simplified Chinese UI with an English switch in View → Language
 - Optional Zydis decoder backend
 
 The project is a static analyzer. It does not execute the input image.
@@ -48,7 +49,7 @@ See [GUI shortcuts](docs/GUI_SHORTCUTS_ZH.md) for the current keyboard map.
 
 ## AI interface
 
-`paper_ai.exe` communicates over newline-delimited JSON-RPC using the MCP methods `initialize`, `tools/list`, and `tools/call`.
+`paper_ai.exe` communicates over newline-delimited JSON-RPC using MCP `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`. Notifications receive no response, malformed requests return JSON-RPC errors, and Unicode names/comments are preserved.
 
 Available operations include:
 
