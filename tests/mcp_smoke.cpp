@@ -21,6 +21,8 @@ int main() {
         "\n"
         R"({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"module_info","arguments":{}}})"
         "\n"
+        R"({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"search_strings","arguments":{"pattern":"ResourceManager"}}})"
+        "\n"
         R"({"jsonrpc":"1.0","id":5,"method":"ping"})"
         "\n");
     std::ostringstream output;
@@ -32,7 +34,8 @@ int main() {
     while (std::getline(responses, line)) {
         if (!line.empty()) ++response_count;
     }
-    assert(response_count == 5);
+    assert(response_count == 6);
+    assert(output.str().find("unknown argument: pattern") != std::string::npos);
 
     const auto unicode = paper::Json::parse(R"({"text":"\u4e2d\u6587 \ud83d\ude80"})");
     assert(unicode.find("text") && unicode.find("text")->as_string() == "中文 🚀");
