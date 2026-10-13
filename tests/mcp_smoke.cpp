@@ -38,6 +38,9 @@ int main() {
     assert(output.str().find("unknown argument: pattern") != std::string::npos);
     assert(output.str().find("list_switches") != std::string::npos);
     assert(output.str().find("list_rtti") != std::string::npos);
+    assert(output.str().find("analyze_function") != std::string::npos);
+    assert(output.str().find("function_signature") != std::string::npos);
+    assert(output.str().find("object_fields") != std::string::npos);
 
     const auto unicode = paper::Json::parse(R"({"text":"\u4e2d\u6587 \ud83d\ude80"})");
     assert(unicode.find("text") && unicode.find("text")->as_string() == "中文 🚀");
