@@ -11,12 +11,21 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <set>
 #include <sstream>
 #include <thread>
 #include <unordered_set>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#endif
 
 namespace paper {
 namespace {
@@ -96,6 +105,17 @@ Json instruction_json(const Instruction& instruction) {
     if (instruction.target) result["target"] = address_json(*instruction.target);
     result["target_indirect"] = instruction.target_indirect;
     result["rip_relative"] = instruction.rip_relative;
+    if (!instruction.destination_register.empty()) result["destination_register"] = instruction.destination_register;
+    if (!instruction.source_register.empty()) result["source_register"] = instruction.source_register;
+    if (!instruction.memory_base.empty()) result["memory_base"] = instruction.memory_base;
+    if (!instruction.memory_index.empty()) result["memory_index"] = instruction.memory_index;
+    if (!instruction.memory_base.empty() || !instruction.memory_index.empty()) {
+        result["memory_scale"] = static_cast<std::uint64_t>(instruction.memory_scale);
+        result["memory_displacement"] = instruction.memory_displacement;
+        result["memory_read"] = instruction.memory_read;
+        result["memory_write"] = instruction.memory_write;
+    }
+    if (instruction.immediate) result["immediate"] = address_json(*instruction.immediate);
     return result;
 }
 
@@ -168,6 +188,23 @@ HexPattern parse_hex_pattern(std::string_view input) {
     return result;
 }
 
+#ifdef _WIN32
+struct DbghelpSymbolContext {
+    std::vector<DebugSymbol>* symbols = nullptr;
+};
+
+BOOL CALLBACK collect_dbghelp_symbol(PSYMBOL_INFO symbol, ULONG, PVOID user) {
+    auto* context = static_cast<DbghelpSymbolContext*>(user);
+    if (!context || !context->symbols || !symbol || symbol->Address == 0) return TRUE;
+    DebugSymbol record;
+    record.address = static_cast<Address>(symbol->Address);
+    record.size = static_cast<std::uint64_t>(symbol->Size);
+    record.name.assign(symbol->Name, symbol->NameLen);
+    context->symbols->push_back(std::move(record));
+    return TRUE;
+}
+#endif
+
 } // namespace
 
 Analyzer::Analyzer() = default;
@@ -187,6 +224,11 @@ bool Analyzer::open_file(const std::string& path, std::string& error) {
         xrefs_to_.clear();
         xrefs_from_.clear();
         strings_.clear();
+        symbols_.clear();
+        symbol_source_.clear();
+        noreturn_targets_.clear();
+        noreturn_functions_.clear();
+        noreturn_reasons_.clear();
         names_.clear();
         comments_.clear();
         bookmarks_.clear();
@@ -213,6 +255,11 @@ void Analyzer::clear() {
     xrefs_to_.clear();
     xrefs_from_.clear();
     strings_.clear();
+    symbols_.clear();
+    symbol_source_.clear();
+    noreturn_targets_.clear();
+    noreturn_functions_.clear();
+    noreturn_reasons_.clear();
     names_.clear();
     comments_.clear();
     bookmarks_.clear();
@@ -296,6 +343,12 @@ void Analyzer::analyze() {
     // most non-stripped images. These ranges are more reliable than looking
     // only for prologues and also recover leaf functions without a call site.
     for (const auto& runtime : image_.runtime_functions()) function_starts.push_back(runtime.start);
+    // Imported process-terminating APIs are exact noreturn evidence. Keep
+    // their IAT slots so the CFG builder can cut the fallthrough edge even
+    // before internal propagation has discovered all wrapper functions.
+    for (const auto& symbol : image_.imports()) {
+        if (known_noreturn_name(symbol.name)) noreturn_targets_.insert(symbol.thunk);
+    }
     build_functions_and_cfg(function_starts);
 
     std::unordered_map<Address, std::string> import_names;
@@ -323,6 +376,7 @@ void Analyzer::analyze() {
     }
     for (auto& [address, refs] : xrefs_to_) std::sort(refs.begin(), refs.end(), [](const Xref& a, const Xref& b) { return a.from < b.from; });
     for (auto& [address, refs] : xrefs_from_) std::sort(refs.begin(), refs.end(), [](const Xref& a, const Xref& b) { return a.to < b.to; });
+    propagate_noreturn();
     build_strings();
 
     stats_.file_size = image_.bytes().size();
@@ -395,7 +449,8 @@ void Analyzer::build_functions_and_cfg(const std::vector<Address>& starts) {
         for (auto it = begin_it; it != end_it; ++it) {
             if ((it->kind == InstructionKind::Jump || it->kind == InstructionKind::ConditionalJump) && it->target && *it->target >= start && *it->target < end && instruction_index_.contains(*it->target)) block_starts.push_back(*it->target);
             const auto next_it = std::next(it);
-            if ((it->kind == InstructionKind::Jump || it->kind == InstructionKind::ConditionalJump || it->kind == InstructionKind::Return || it->kind == InstructionKind::IndirectJump) && next_it != end_it) block_starts.push_back(next_it->address);
+            const bool terminal_call = (it->kind == InstructionKind::Call || it->kind == InstructionKind::IndirectCall) && it->target && is_noreturn_target(*it->target);
+            if ((it->kind == InstructionKind::Jump || it->kind == InstructionKind::ConditionalJump || it->kind == InstructionKind::Return || it->kind == InstructionKind::IndirectJump || terminal_call) && next_it != end_it) block_starts.push_back(next_it->address);
         }
         std::sort(block_starts.begin(), block_starts.end());
         block_starts.erase(std::unique(block_starts.begin(), block_starts.end()), block_starts.end());
@@ -417,7 +472,8 @@ void Analyzer::build_functions_and_cfg(const std::vector<Address>& starts) {
                 if (last->target && *last->target >= start && *last->target < end) block.successors.push_back(*last->target);
                 const auto fallthrough = last->address + last->length;
                 if (fallthrough < end && instruction_index_.contains(fallthrough)) block.successors.push_back(fallthrough);
-            } else if (last->kind != InstructionKind::Return && last->kind != InstructionKind::IndirectJump) {
+            } else if (last->kind != InstructionKind::Return && last->kind != InstructionKind::IndirectJump &&
+                       !((last->kind == InstructionKind::Call || last->kind == InstructionKind::IndirectCall) && last->target && is_noreturn_target(*last->target))) {
                 const auto fallthrough = last->address + last->length;
                 if (fallthrough < end && instruction_index_.contains(fallthrough)) block.successors.push_back(fallthrough);
             }
@@ -489,6 +545,95 @@ void Analyzer::build_strings() {
     std::sort(strings_.begin(), strings_.end(), [](const StringLiteral& a, const StringLiteral& b) { return a.address < b.address; });
 }
 
+bool Analyzer::known_noreturn_name(std::string_view name) {
+    const auto value = lower(std::string(name));
+    static constexpr std::string_view exact[] = {
+        "exit", "_exit", "_cexit", "quick_exit", "abort", "terminate",
+        "terminateprocess", "exitprocess", "rtlexituserthread", "__fastfail",
+        "raisefailfastexception", "__cxxthrowexception", "__cxa_throw",
+        "__cxa_rethrow", "fatal", "fatalerror", "panic"
+    };
+    for (const auto candidate : exact) if (value == candidate) return true;
+    return value.find("fastfail") != std::string::npos || value.find("fatal") != std::string::npos;
+}
+
+bool Analyzer::is_noreturn_target(Address address) const {
+    if (noreturn_targets_.contains(address) || noreturn_functions_.contains(address)) return true;
+    for (const auto& symbol : image_.imports()) {
+        if (symbol.thunk == address && known_noreturn_name(symbol.name)) return true;
+    }
+    return false;
+}
+
+void Analyzer::propagate_noreturn() {
+    noreturn_functions_.clear();
+    noreturn_reasons_.clear();
+    // Direct calls to known imported terminators and explicit traps are
+    // deterministic evidence. Do not classify a function merely because it
+    // has no decoded return; incomplete disassembly is common in packed PE
+    // files and must remain UNKNOWN.
+    for (const auto& function : functions_) {
+        const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function.start,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function.end,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        for (auto it = begin; it != end; ++it) {
+            if ((it->kind == InstructionKind::Call || it->kind == InstructionKind::IndirectCall) &&
+                it->target && is_noreturn_target(*it->target)) {
+                noreturn_functions_.insert(function.start);
+                noreturn_reasons_[function.start] = "calls a known noreturn target at " + address_string(it->address);
+                break;
+            }
+            if (it->kind == InstructionKind::Trap &&
+                (it->mnemonic == "ud2" || it->mnemonic == "hlt" || it->mnemonic == "int3")) {
+                noreturn_functions_.insert(function.start);
+                noreturn_reasons_[function.start] = "terminates with " + it->mnemonic;
+                break;
+            }
+        }
+    }
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& function : functions_) {
+            if (noreturn_functions_.contains(function.start)) continue;
+            const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function.start,
+                [](const Instruction& instruction, Address value) { return instruction.address < value; });
+            const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function.end,
+                [](const Instruction& instruction, Address value) { return instruction.address < value; });
+            for (auto it = begin; it != end; ++it) {
+                if ((it->kind != InstructionKind::Call && it->kind != InstructionKind::IndirectCall) || !it->target) continue;
+                const auto* callee = function_at(*it->target);
+                if (!callee || !noreturn_functions_.contains(callee->start)) continue;
+                noreturn_functions_.insert(function.start);
+                noreturn_reasons_[function.start] = "calls noreturn function " + address_string(callee->start);
+                changed = true;
+                break;
+            }
+        }
+    }
+    // Rebuild only the affected terminal edges. This preserves the existing
+    // CFG partition while making post-call bytes unreachable to callers.
+    for (auto& record : blocks_) {
+        const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), record.block.start,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), record.block.end,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        if (begin == end) continue;
+        const auto& last = *std::prev(end);
+        if ((last.kind == InstructionKind::Call || last.kind == InstructionKind::IndirectCall) && last.target && is_noreturn_target(*last.target)) {
+            record.block.successors.clear();
+        }
+    }
+    for (auto& record : blocks_) record.block.predecessors.clear();
+    for (const auto& record : blocks_) {
+        for (const auto successor : record.block.successors) {
+            const auto it = block_index_.find(successor);
+            if (it != block_index_.end()) blocks_[it->second].block.predecessors.push_back(record.block.start);
+        }
+    }
+}
+
 const Instruction* Analyzer::instruction_at(Address address) const {
     const auto it = instruction_index_.find(address);
     return it == instruction_index_.end() ? nullptr : &instructions_[it->second];
@@ -534,10 +679,22 @@ Json Analyzer::module_info() const {
     result["image_size"] = image_.info().image_size;
     result["pe32_plus"] = image_.info().pe32_plus;
     result["runtime_function_count"] = static_cast<std::uint64_t>(image_.runtime_functions().size());
+    result["tls_callback_count"] = static_cast<std::uint64_t>(image_.tls_callbacks().size());
+    result["relocation_count"] = static_cast<std::uint64_t>(image_.relocations().size());
+    result["resource_count"] = static_cast<std::uint64_t>(image_.resources().size());
+    result["rtti_count"] = static_cast<std::uint64_t>(discover_rtti().size());
+    Json pdb = Json::object();
+    pdb["present"] = image_.pdb_info().present;
+    pdb["path"] = image_.pdb_info().path;
+    pdb["guid"] = image_.pdb_info().guid;
+    pdb["age"] = image_.pdb_info().age;
+    result["pdb"] = std::move(pdb);
     result["database_path"] = database_path_;
     result["name_count"] = static_cast<std::uint64_t>(names_.size());
     result["comment_count"] = static_cast<std::uint64_t>(comments_.size());
     result["bookmark_count"] = static_cast<std::uint64_t>(bookmarks_.size());
+    result["symbol_count"] = static_cast<std::uint64_t>(symbols_.size());
+    result["symbol_source"] = symbol_source_;
     return result;
 }
 
@@ -660,6 +817,267 @@ Json Analyzer::vtable_of(const Json& arguments) const {
     return result;
 }
 
+std::vector<Analyzer::SwitchRecord> Analyzer::discover_switches(const Function* function) const {
+    std::vector<SwitchRecord> result;
+    if (!function) return result;
+    const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function->start,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function->end,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    const std::size_t pointer_size = image_.info().pe32_plus ? 8 : 4;
+    auto read_pointer = [&](Address address) -> std::optional<Address> {
+        const auto* section = image_.section_for_address(address);
+        if (!section || address < section->start) return std::nullopt;
+        const auto offset = static_cast<std::size_t>(address - section->start);
+        if (offset > section->bytes.size() || pointer_size > section->bytes.size() - offset) return std::nullopt;
+        Address value = 0;
+        for (std::size_t byte = 0; byte < pointer_size; ++byte) value |= static_cast<Address>(section->bytes[offset + byte]) << (byte * 8);
+        return value;
+    };
+    for (auto instruction = begin; instruction != end; ++instruction) {
+        if (instruction->kind != InstructionKind::IndirectJump || instruction->memory_index.empty() ||
+            instruction->memory_scale != pointer_size || !instruction->target) continue;
+        const auto* table_section = image_.section_for_address(*instruction->target);
+        if (!table_section || table_section->executable || !table_section->readable) continue;
+        SwitchRecord record;
+        record.instruction = instruction->address;
+        record.table = *instruction->target;
+        record.entry_size = pointer_size;
+        for (std::size_t index = 0; index < 4096; ++index) {
+            const auto entry_address = record.table + index * pointer_size;
+            const auto target = read_pointer(entry_address);
+            if (!target || !image_.section_for_address(*target) || !image_.section_for_address(*target)->executable || !instruction_index_.contains(*target)) break;
+            record.targets.push_back(*target);
+        }
+        if (record.targets.size() >= 2) result.push_back(std::move(record));
+    }
+    return result;
+}
+
+std::vector<Analyzer::RttiRecord> Analyzer::discover_rtti() const {
+    std::vector<RttiRecord> result;
+    const std::size_t pointer_size = image_.info().pe32_plus ? 8 : 4;
+    auto read_pointer = [&](Address address) -> std::optional<Address> {
+        const auto* section = image_.section_for_address(address);
+        if (!section || address < section->start) return std::nullopt;
+        const auto offset = static_cast<std::size_t>(address - section->start);
+        if (offset > section->bytes.size() || pointer_size > section->bytes.size() - offset) return std::nullopt;
+        Address value = 0;
+        for (std::size_t byte = 0; byte < pointer_size; ++byte) value |= static_cast<Address>(section->bytes[offset + byte]) << (byte * 8);
+        return value;
+    };
+    auto read_u32 = [&](Address address) -> std::optional<std::uint32_t> {
+        const auto* section = image_.section_for_address(address);
+        if (!section || address < section->start) return std::nullopt;
+        const auto offset = static_cast<std::size_t>(address - section->start);
+        if (offset > section->bytes.size() || 4 > section->bytes.size() - offset) return std::nullopt;
+        return static_cast<std::uint32_t>(section->bytes[offset]) |
+               (static_cast<std::uint32_t>(section->bytes[offset + 1]) << 8) |
+               (static_cast<std::uint32_t>(section->bytes[offset + 2]) << 16) |
+               (static_cast<std::uint32_t>(section->bytes[offset + 3]) << 24);
+    };
+    auto rva_address = [&](std::uint32_t rva) -> std::optional<Address> {
+        return image_.section_for_rva(rva) ? std::optional<Address>(image_.info().image_base + rva) : std::nullopt;
+    };
+    auto descriptor_name = [&](Address descriptor) {
+        const auto offset = image_.info().pe32_plus ? 16u : 8u;
+        const auto* section = image_.section_for_address(descriptor + offset);
+        if (!section || descriptor + offset < section->start) return std::string{};
+        const auto position = static_cast<std::size_t>(descriptor + offset - section->start);
+        if (position >= section->bytes.size()) return std::string{};
+        std::string name;
+        for (std::size_t index = position; index < section->bytes.size() && index - position < 1024 && section->bytes[index] != 0; ++index) name.push_back(static_cast<char>(section->bytes[index]));
+        return name;
+    };
+    for (const auto& table : discover_vtables()) {
+        if (table.start < pointer_size) continue;
+        const auto locator = read_pointer(table.start - pointer_size);
+        if (!locator || !image_.section_for_address(*locator)) continue;
+        const auto type_rva = read_u32(*locator + 12);
+        const auto hierarchy_rva = read_u32(*locator + 16);
+        if (!type_rva || !hierarchy_rva) continue;
+        const auto descriptor = rva_address(*type_rva);
+        const auto hierarchy = rva_address(*hierarchy_rva);
+        if (!descriptor || !hierarchy) continue;
+        const auto type_name = descriptor_name(*descriptor);
+        if (type_name.empty()) continue;
+        RttiRecord record;
+        record.vtable = table.start;
+        record.complete_object_locator = *locator;
+        record.type_descriptor = *descriptor;
+        record.type_name = type_name;
+        const auto count = read_u32(*hierarchy + 8);
+        const auto array_rva = read_u32(*hierarchy + 12);
+        if (count && array_rva && *count < 1024) {
+            const auto array = rva_address(*array_rva);
+            if (array) {
+                for (std::uint32_t index = 0; index < *count; ++index) {
+                    const auto base_rva = read_u32(*array + static_cast<Address>(index) * 4);
+                    if (!base_rva) continue;
+                    if (const auto base = rva_address(*base_rva)) {
+                        const auto base_type_rva = read_u32(*base);
+                        if (base_type_rva) if (const auto base_type = rva_address(*base_type_rva)) {
+                            const auto name = descriptor_name(*base_type);
+                            if (!name.empty()) record.bases.push_back(name);
+                        }
+                    }
+                }
+            }
+        }
+        result.push_back(std::move(record));
+    }
+    return result;
+}
+
+Json Analyzer::list_switches(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto address = argument_address(arguments, "function_address") ? argument_address(arguments, "function_address") : argument_address(arguments, "address");
+    const auto* function = address ? function_at(address) : nullptr;
+    Json result = Json::array();
+    if (function) {
+        for (const auto& record : discover_switches(function)) {
+            Json item = Json::object();
+            item["function"] = address_json(function->start);
+            item["instruction"] = address_json(record.instruction);
+            item["table"] = address_json(record.table);
+            item["entry_size"] = static_cast<std::uint64_t>(record.entry_size);
+            Json targets = Json::array();
+            for (const auto target : record.targets) targets.push_back(address_json(target));
+            item["targets"] = std::move(targets);
+            result.push_back(std::move(item));
+        }
+        return result;
+    }
+    for (const auto& candidate : functions_) {
+        for (const auto& record : discover_switches(&candidate)) {
+            Json item = Json::object();
+            item["function"] = address_json(candidate.start);
+            item["instruction"] = address_json(record.instruction);
+            item["table"] = address_json(record.table);
+            item["entry_size"] = static_cast<std::uint64_t>(record.entry_size);
+            Json targets = Json::array();
+            for (const auto target : record.targets) targets.push_back(address_json(target));
+            item["targets"] = std::move(targets);
+            result.push_back(std::move(item));
+            if (result.array_items().size() >= 10'000) return result;
+        }
+    }
+    return result;
+}
+
+Json Analyzer::stack_variables(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto address = argument_address(arguments, "function_address") ? argument_address(arguments, "function_address") : argument_address(arguments, "address");
+    const auto* function = function_at(address);
+    Json result = Json::array();
+    if (!function) return result;
+    struct Slot { std::int64_t offset = 0; std::string base; std::size_t reads = 0; std::size_t writes = 0; std::vector<Address> references; };
+    std::map<std::int64_t, Slot> slots;
+    std::int64_t sp_delta = 0;
+    std::optional<std::int64_t> rbp_entry;
+    const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function->start,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function->end,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    for (auto it = begin; it != end; ++it) {
+        if (it->mnemonic == "push") sp_delta -= image_.info().pe32_plus ? 8 : 4;
+        else if (it->mnemonic == "pop") sp_delta += image_.info().pe32_plus ? 8 : 4;
+        if ((it->mnemonic == "sub" || it->mnemonic == "add") && it->destination_register == "rsp" && it->immediate) {
+            const auto value = static_cast<std::int64_t>(*it->immediate);
+            sp_delta += it->mnemonic == "sub" ? -value : value;
+        }
+        if (it->destination_register == "rbp" && it->source_register == "rsp") rbp_entry = sp_delta;
+        if (it->memory_base != "rsp" && it->memory_base != "rbp") continue;
+        std::optional<std::int64_t> logical;
+        std::string base = it->memory_base;
+        if (base == "rsp") logical = sp_delta + it->memory_displacement;
+        else if (rbp_entry) logical = *rbp_entry + it->memory_displacement;
+        if (!logical) continue;
+        auto& slot = slots[*logical];
+        slot.offset = *logical;
+        slot.base = base;
+        if (it->memory_read) ++slot.reads;
+        if (it->memory_write) ++slot.writes;
+        slot.references.push_back(it->address);
+    }
+    for (const auto& [offset, slot] : slots) {
+        Json item = Json::object();
+        item["offset"] = static_cast<std::int64_t>(offset);
+        item["base"] = slot.base;
+        item["reads"] = static_cast<std::uint64_t>(slot.reads);
+        item["writes"] = static_cast<std::uint64_t>(slot.writes);
+        Json references = Json::array();
+        for (const auto reference : slot.references) references.push_back(address_json(reference));
+        item["references"] = std::move(references);
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::function_dataflow(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto address = argument_address(arguments, "function_address") ? argument_address(arguments, "function_address") : argument_address(arguments, "address");
+    const auto* function = function_at(address);
+    Json result = Json::object();
+    Json constants = Json::array();
+    Json indirect_targets = Json::array();
+    if (!function) { result["constants"] = std::move(constants); result["indirect_targets"] = std::move(indirect_targets); return result; }
+    std::unordered_map<std::string, Address> known;
+    auto read_pointer = [&](Address target) -> std::optional<Address> {
+        const auto* section = image_.section_for_address(target);
+        const auto width = image_.info().pe32_plus ? 8u : 4u;
+        if (!section || target < section->start) return std::nullopt;
+        const auto offset = static_cast<std::size_t>(target - section->start);
+        if (offset > section->bytes.size() || width > section->bytes.size() - offset) return std::nullopt;
+        Address value = 0;
+        for (std::size_t byte = 0; byte < width; ++byte) value |= static_cast<Address>(section->bytes[offset + byte]) << (byte * 8);
+        return value;
+    };
+    const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function->start,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function->end,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    for (auto it = begin; it != end; ++it) {
+        std::optional<Address> value;
+        if (it->immediate && !it->destination_register.empty()) value = *it->immediate;
+        if (it->memory_read && it->target && !it->destination_register.empty()) value = read_pointer(*it->target);
+        if (it->mnemonic == "xor" && it->destination_register == it->source_register && !it->destination_register.empty()) value = 0;
+        if (value && !it->destination_register.empty()) {
+            known[it->destination_register] = *value;
+            Json item = Json::object();
+            item["instruction"] = address_json(it->address);
+            item["register"] = it->destination_register;
+            item["value"] = address_json(*value);
+            constants.push_back(std::move(item));
+        } else if (!it->destination_register.empty() && !it->source_register.empty()) {
+            const auto source = known.find(it->source_register);
+            if (source != known.end()) known[it->destination_register] = source->second;
+        }
+        if ((it->kind == InstructionKind::IndirectCall || it->kind == InstructionKind::IndirectJump)) {
+            std::optional<Address> target;
+            if (it->source_register.empty() == false) {
+                const auto known_target = known.find(it->source_register);
+                if (known_target != known.end()) target = known_target->second;
+            }
+            if (!target && it->target && it->memory_read) target = read_pointer(*it->target);
+            if (target && image_.section_for_address(*target) && image_.section_for_address(*target)->executable) {
+                Json item = Json::object();
+                item["instruction"] = address_json(it->address);
+                item["kind"] = it->kind == InstructionKind::IndirectCall ? "call" : "jump";
+                item["target"] = address_json(*target);
+                indirect_targets.push_back(std::move(item));
+            }
+        }
+        if (it->kind == InstructionKind::Call || it->kind == InstructionKind::IndirectCall) {
+            for (const auto& register_name : {std::string("rax"), std::string("rcx"), std::string("rdx"), std::string("r8"), std::string("r9"), std::string("r10"), std::string("r11")}) known.erase(register_name);
+        }
+    }
+    result["function"] = address_json(function->start);
+    result["constants"] = std::move(constants);
+    result["indirect_targets"] = std::move(indirect_targets);
+    return result;
+}
+
 Json Analyzer::list_runtime_functions(const Json& arguments) const {
     std::shared_lock lock(mutex_);
     const auto offset = argument_size(arguments, "offset", 0);
@@ -673,6 +1091,209 @@ Json Analyzer::list_runtime_functions(const Json& arguments) const {
         item["start"] = address_json(runtime.start);
         item["end"] = address_json(runtime.end);
         item["unwind"] = address_json(runtime.unwind);
+        item["unwind_flags"] = static_cast<std::uint64_t>(runtime.unwind_flags);
+        item["unwind_code_count"] = static_cast<std::uint64_t>(runtime.unwind_code_count);
+        if (runtime.exception_handler) item["exception_handler"] = address_json(runtime.exception_handler);
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::list_noreturn_functions(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto query = arguments.find("query") ? arguments.find("query")->string_or("") : "";
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 50'000);
+    Json result = Json::array();
+    for (const auto& function : functions_) {
+        if (!noreturn_functions_.contains(function.start) && !is_noreturn_target(function.start)) continue;
+        if (!contains_case_insensitive(function.name, query)) continue;
+        Json item = Json::object();
+        item["address"] = address_json(function.start);
+        item["name"] = function.name;
+        item["noreturn"] = true;
+        if (const auto reason = noreturn_reasons_.find(function.start); reason != noreturn_reasons_.end()) item["reason"] = reason->second;
+        result.push_back(std::move(item));
+        if (result.array_items().size() >= limit) break;
+    }
+    return result;
+}
+
+Json Analyzer::list_rtti(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto query = arguments.find("query") ? arguments.find("query")->string_or("") : "";
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 50'000);
+    Json result = Json::array();
+    for (const auto& record : discover_rtti()) {
+        if (!query.empty() && !contains_case_insensitive(record.type_name, query)) continue;
+        Json item = Json::object();
+        item["vtable"] = address_json(record.vtable);
+        item["complete_object_locator"] = address_json(record.complete_object_locator);
+        item["type_descriptor"] = address_json(record.type_descriptor);
+        item["type_name"] = record.type_name;
+        Json bases = Json::array();
+        for (const auto& base : record.bases) bases.push_back(base);
+        item["bases"] = std::move(bases);
+        result.push_back(std::move(item));
+        if (result.array_items().size() >= limit) break;
+    }
+    return result;
+}
+
+Json Analyzer::list_exceptions(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto offset = argument_size(arguments, "offset", 0);
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 100'000);
+    Json result = Json::array();
+    std::size_t skipped = 0;
+    for (const auto& runtime : image_.runtime_functions()) {
+        if (skipped++ < offset) continue;
+        if (result.array_items().size() >= limit) break;
+        Json item = Json::object();
+        item["function_start"] = address_json(runtime.start);
+        item["function_end"] = address_json(runtime.end);
+        item["unwind"] = address_json(runtime.unwind);
+        item["flags"] = static_cast<std::uint64_t>(runtime.unwind_flags);
+        item["has_exception_handler"] = runtime.exception_handler != 0;
+        if (runtime.exception_handler) item["handler"] = address_json(runtime.exception_handler);
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::list_tls_callbacks(const Json&) const {
+    std::shared_lock lock(mutex_);
+    Json result = Json::array();
+    for (const auto& callback : image_.tls_callbacks()) {
+        Json item = Json::object();
+        item["address"] = address_json(callback.address);
+        item["function"] = function_at(callback.address) != nullptr;
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::list_relocations(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto offset = argument_size(arguments, "offset", 0);
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 200'000);
+    Json result = Json::array();
+    for (std::size_t index = offset; index < image_.relocations().size() && result.array_items().size() < limit; ++index) {
+        const auto& relocation = image_.relocations()[index];
+        Json item = Json::object();
+        item["address"] = address_json(relocation.address);
+        item["page_rva"] = relocation.page_rva;
+        item["type"] = relocation.type;
+        result.push_back(std::move(item));
+    }
+    return result;
+}
+
+Json Analyzer::list_resources(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto query = arguments.find("query") ? arguments.find("query")->string_or("") : "";
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 100'000);
+    Json result = Json::array();
+    for (const auto& resource : image_.resources()) {
+        const auto full = resource.type + "/" + resource.name + "/" + resource.language;
+        if (!contains_case_insensitive(full, query)) continue;
+        Json item = Json::object();
+        item["type"] = resource.type;
+        item["name"] = resource.name;
+        item["language"] = resource.language;
+        item["data_rva"] = resource.data_rva;
+        item["address"] = address_json(image_.info().image_base + resource.data_rva);
+        item["size"] = resource.size;
+        item["codepage"] = resource.codepage;
+        result.push_back(std::move(item));
+        if (result.array_items().size() >= limit) break;
+    }
+    return result;
+}
+
+Json Analyzer::pdb_info(const Json&) const {
+    std::shared_lock lock(mutex_);
+    const auto& pdb = image_.pdb_info();
+    Json result = Json::object();
+    result["present"] = pdb.present;
+    result["type"] = pdb.debug_type;
+    result["path"] = pdb.path;
+    result["guid"] = pdb.guid;
+    result["age"] = pdb.age;
+    result["symbols_loaded"] = false;
+    result["note"] = "Paper exposes embedded CodeView identity; it does not invent symbols when a PDB is absent.";
+    return result;
+}
+
+Json Analyzer::load_symbols(const Json& arguments) {
+    std::unique_lock lock(mutex_);
+    Json result = Json::object();
+    if (image_.info().path.empty()) {
+        result["ok"] = false;
+        result["error"] = "no open image";
+        return result;
+    }
+#ifdef _WIN32
+    const auto search_path = arguments.find("path") ? arguments.find("path")->string_or("") : "";
+    HANDLE process = GetCurrentProcess();
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
+    if (!SymInitializeA(process, search_path.empty() ? nullptr : search_path.c_str(), FALSE)) {
+        result["ok"] = false;
+        result["error"] = "SymInitialize failed: " + std::to_string(GetLastError());
+        return result;
+    }
+    const auto base = SymLoadModuleExA(process, nullptr, image_.info().path.c_str(), nullptr,
+                                       image_.info().image_base, image_.info().image_size, nullptr, 0);
+    if (base == 0) {
+        result["ok"] = false;
+        result["error"] = "SymLoadModuleEx failed: " + std::to_string(GetLastError());
+        SymCleanup(process);
+        return result;
+    }
+    std::vector<DebugSymbol> symbols;
+    DbghelpSymbolContext context{&symbols};
+    const bool enumerated = SymEnumSymbols(process, base, nullptr, collect_dbghelp_symbol, &context) != FALSE;
+    SymUnloadModule64(process, base);
+    SymCleanup(process);
+    if (!enumerated) {
+        result["ok"] = false;
+        result["error"] = "SymEnumSymbols failed: " + std::to_string(GetLastError());
+        return result;
+    }
+    std::sort(symbols.begin(), symbols.end(), [](const DebugSymbol& left, const DebugSymbol& right) {
+        return left.address < right.address;
+    });
+    symbols.erase(std::unique(symbols.begin(), symbols.end(), [](const DebugSymbol& left, const DebugSymbol& right) {
+        return left.address == right.address && left.name == right.name;
+    }), symbols.end());
+    symbols_ = std::move(symbols);
+    symbol_source_ = search_path.empty() ? image_.pdb_info().path : search_path;
+    result["ok"] = true;
+    result["source"] = symbol_source_;
+    result["count"] = static_cast<std::uint64_t>(symbols_.size());
+#else
+    (void)arguments;
+    result["ok"] = false;
+    result["error"] = "external PDB symbol loading requires Windows DbgHelp";
+#endif
+    return result;
+}
+
+Json Analyzer::list_symbols(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto query = arguments.find("query") ? arguments.find("query")->string_or("") : "";
+    const auto offset = argument_size(arguments, "offset", 0);
+    const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 10'000), 100'000);
+    Json result = Json::array();
+    std::size_t skipped = 0;
+    for (const auto& symbol : symbols_) {
+        if (!contains_case_insensitive(symbol.name, query)) continue;
+        if (skipped++ < offset) continue;
+        if (result.array_items().size() >= limit) break;
+        Json item = Json::object();
+        item["address"] = address_json(symbol.address);
+        item["size"] = symbol.size;
+        item["name"] = symbol.name;
+        item["source"] = symbol_source_;
         result.push_back(std::move(item));
     }
     return result;
@@ -695,6 +1316,7 @@ Json Analyzer::list_functions(const Json& arguments) const {
         item["name"] = function.name;
         item["exported"] = function.exported;
         item["thunk"] = function.thunk;
+        item["noreturn"] = noreturn_functions_.contains(function.start) || is_noreturn_target(function.start);
         item["block_count"] = static_cast<std::uint64_t>(function.blocks.size());
         result.push_back(std::move(item));
     }
@@ -716,6 +1338,8 @@ Json Analyzer::get_function(const Json& arguments) const {
     result["name"] = function->name;
     result["exported"] = function->exported;
     result["thunk"] = function->thunk;
+    result["noreturn"] = noreturn_functions_.contains(function->start) || is_noreturn_target(function->start);
+    if (const auto reason = noreturn_reasons_.find(function->start); reason != noreturn_reasons_.end()) result["noreturn_reason"] = reason->second;
     if (const auto comment = comments_.find(function->start); comment != comments_.end()) result["comment"] = comment->second;
     Json block_list = Json::array();
     for (const auto address_value : function->blocks) block_list.push_back(address_json(address_value));
@@ -968,6 +1592,7 @@ Json Analyzer::list_exports(const Json& arguments) const {
         item["ordinal"] = symbol.ordinal;
         item["address"] = address_json(symbol.address);
         item["forwarded"] = symbol.forwarded;
+        if (symbol.forwarded) item["forwarder"] = symbol.forwarder;
         result.push_back(std::move(item));
     }
     return result;
@@ -1338,6 +1963,20 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
         if (reject_unknown({"address"})) return validation_error;
     } else if (name == "list_runtime_functions") {
         if (reject_unknown({"offset", "limit"})) return validation_error;
+    } else if (name == "list_switches" || name == "stack_variables" || name == "function_dataflow") {
+        if (reject_unknown({"function_address", "address"})) return validation_error;
+    } else if (name == "list_noreturn_functions" || name == "list_rtti") {
+        if (reject_unknown({"query", "limit"})) return validation_error;
+    } else if (name == "list_exceptions" || name == "list_relocations") {
+        if (reject_unknown({"offset", "limit"})) return validation_error;
+    } else if (name == "list_tls_callbacks" || name == "pdb_info") {
+        if (reject_unknown({})) return validation_error;
+    } else if (name == "list_resources") {
+        if (reject_unknown({"query", "limit"})) return validation_error;
+    } else if (name == "load_symbols") {
+        if (reject_unknown({"path"})) return validation_error;
+    } else if (name == "list_symbols") {
+        if (reject_unknown({"query", "offset", "limit"})) return validation_error;
     } else if (name == "call_graph") {
         if (reject_unknown({"function_address", "direction", "depth"})) return validation_error;
     } else if (name == "set_name") {
@@ -1370,6 +2009,18 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
     if (name == "vtable_of") return vtable_of(arguments);
     if (name == "function_strings") return function_strings(arguments);
     if (name == "list_runtime_functions") return list_runtime_functions(arguments);
+    if (name == "list_switches") return list_switches(arguments);
+    if (name == "stack_variables") return stack_variables(arguments);
+    if (name == "function_dataflow") return function_dataflow(arguments);
+    if (name == "list_noreturn_functions") return list_noreturn_functions(arguments);
+    if (name == "list_rtti") return list_rtti(arguments);
+    if (name == "list_exceptions") return list_exceptions(arguments);
+    if (name == "list_tls_callbacks") return list_tls_callbacks(arguments);
+    if (name == "list_relocations") return list_relocations(arguments);
+    if (name == "list_resources") return list_resources(arguments);
+    if (name == "pdb_info") return pdb_info(arguments);
+    if (name == "load_symbols") return load_symbols(arguments);
+    if (name == "list_symbols") return list_symbols(arguments);
     if (name == "call_graph") return call_graph(arguments);
     if (name == "analysis_stats") return analysis_stats();
     if (name == "set_name") return set_name(arguments);
