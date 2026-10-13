@@ -32,7 +32,10 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 7. `xrefs_from({"address":"0x..."})`：查找当前指令产生的调用、跳转或数据引用。
 8. `cfg({"function_address":"0x..."})`：获取基本块和前后继关系。
 9. `call_graph({"function_address":"0x...","direction":"callees","depth":2})`：扩展到调用图。
-10. `search_strings()`、`search_bytes()`：用文本或字节模式定位辅助证据。
+10. `search_strings()`、`list_strings()`、`search_bytes()`：用文本或字节模式定位辅助证据。
+11. `list_names()`、`list_bookmarks()`：查看当前数据库中的函数/导入/导出/用户命名和标记。
+12. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
+13. `save_database()`、`load_database()`：保存或恢复 `<image>.paper.json` 侧车数据库。
 
 ## 经典 xrefs 查询
 
@@ -70,10 +73,16 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `xrefs_from` | 查出向交叉引用 |
 | `cfg` | 基本块、后继和前驱 |
 | `search_strings` | ASCII/UTF-16 字符串搜索 |
+| `list_strings` | IDA 风格字符串列表 |
 | `search_bytes` | 十六进制字节模式搜索 |
 | `list_imports` | 导入 DLL、符号和 IAT 地址 |
 | `list_exports` | 导出名称、序号和地址 |
+| `list_names` | 函数、导入、导出和用户名称 |
+| `list_bookmarks` | 持久化地址标记 |
 | `call_graph` | 调用者/被调用者遍历 |
+| `set_name` / `set_comment` | 写入或清除地址标注 |
+| `set_bookmark` | 写入或清除地址书签 |
+| `save_database` / `load_database` | 保存或加载 Paper 分析数据库 |
 | `analysis_stats` | 分析时间、线程数和索引规模 |
 
 所有查询都读取已经建立的内存索引。`xrefs_to`、`xrefs_from`、函数查找和 CFG 查询不重新扫描文件；分页参数用于避免大程序把整个结果一次性送给 AI。`module_info.runtime_function_count` 可以用来判断 PE 是否提供了 x64 `.pdata` 函数边界证据；`analysis_stats` 可用来记录多核分析耗时和工作线程数。
