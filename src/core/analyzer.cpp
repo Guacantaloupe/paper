@@ -2125,6 +2125,21 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         const auto last = value.find_last_not_of(" \t\r\n");
         return value.substr(first, last - first + 1);
     };
+    auto canonical_register = [](std::string value) {
+        value = lower(std::move(value));
+        if (value == "eax") return std::string("rax");
+        if (value == "ebx") return std::string("rbx");
+        if (value == "ecx") return std::string("rcx");
+        if (value == "edx") return std::string("rdx");
+        if (value == "esp") return std::string("rsp");
+        if (value == "ebp") return std::string("rbp");
+        if (value == "esi") return std::string("rsi");
+        if (value == "edi") return std::string("rdi");
+        if (value.size() > 2 && value.front() == 'r' && value.back() == 'd') return value.substr(0, value.size() - 1);
+        if (value.size() > 2 && value.front() == 'r' && value.back() == 'w') return value.substr(0, value.size() - 1);
+        if (value.size() > 2 && value.front() == 'r' && value.back() == 'b') return value.substr(0, value.size() - 1);
+        return value;
+    };
     auto match = [&](const Instruction& instruction, std::string_view requested) {
         const auto text = lower(trim(std::string(requested)));
         if (text.empty()) return false;
@@ -2141,7 +2156,7 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         if (comma != std::string::npos) {
             auto lhs = trim(remainder.substr(0, comma));
             if (!lhs.empty() && lhs.front() != '{' && lhs != "imm" && lhs != "reg" && lhs != "register" &&
-                !instruction.destination_register.empty() && lhs != lower(instruction.destination_register)) return false;
+                !instruction.destination_register.empty() && canonical_register(lhs) != canonical_register(instruction.destination_register)) return false;
         }
         // Literal register tokens in a memory operand are checked against the
         // structured decoder fields. Placeholders above intentionally avoid
@@ -2155,7 +2170,7 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         }
         return true;
     };
-    auto append_match = [&](const Instruction& instruction, const std::vector<std::string>* sequence) -> std::optional<Json> {
+    auto append_match = [&](const Instruction& instruction) -> std::optional<Json> {
         if (address_filter && instruction.address != address_filter) return std::nullopt;
         if (!target_filter.empty() && (!instruction.target || !target_filter.contains(*instruction.target))) return std::nullopt;
         const auto* function = function_at(instruction.address);
@@ -2171,16 +2186,6 @@ Json Analyzer::find_instructions(const Json& arguments) const {
             owner["end"] = address_json(function->end);
             owner["name"] = function->name;
             item["function"] = std::move(owner);
-        }
-        if (sequence) {
-            Json matched = Json::array();
-            for (std::size_t offset = 0; offset < sequence->size(); ++offset) {
-                const auto* candidate = instruction_at(instruction.address);
-                (void)candidate;
-                // The caller supplies the sequence addresses separately below;
-                // this branch only reserves the stable result shape.
-            }
-            item["sequence"] = std::move(matched);
         }
         return item;
     };
@@ -2198,7 +2203,7 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         }
         for (const auto index : candidates) {
             if (index >= instructions_.size() || !match(instructions_[index], requested)) continue;
-            if (auto item = append_match(instructions_[index], nullptr)) result.push_back(std::move(*item));
+            if (auto item = append_match(instructions_[index])) result.push_back(std::move(*item));
             if (result.array_items().size() >= limit) break;
         }
         return result;
@@ -2226,7 +2231,7 @@ Json Analyzer::find_instructions(const Json& arguments) const {
         if (address_filter && instructions_[index].address != address_filter) continue;
         const auto* function = function_at(instructions_[index].address);
         if (function_filter && (!function || function->start != function_filter)) continue;
-        auto item_value = append_match(instructions_[index], &sequence);
+        auto item_value = append_match(instructions_[index]);
         if (!item_value) continue;
         Json item = std::move(*item_value);
         Json matched_instructions = Json::array();
