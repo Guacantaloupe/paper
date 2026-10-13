@@ -28,6 +28,7 @@ public:
 
     Json module_info() const;
     Json list_sections() const;
+    Json list_segments() const;
     Json list_functions(const Json& arguments) const;
     Json get_function(const Json& arguments) const;
     Json disassemble(const Json& arguments) const;
