@@ -13,6 +13,7 @@ Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式
 | Xrefs | 查看当前地址的入向/出向交叉引用 |
 | CFG | 查看当前函数的基本块和前后继 |
 | Callers / Callees | 查看两层调用者或被调用者 |
+| Single-function analysis | 汇总当前函数的 CFG、跳表、数据流、栈槽、签名、字段和 xrefs |
 | Imports / Exports | 切换导入表或导出表 |
 | Lists | 打开 Strings、Names、Imports、Exports、Segments、Bookmarks |
 | Search | 搜索十六进制字节模式 |
@@ -30,6 +31,7 @@ Paper v0.2 的桌面窗口使用 Dear ImGui Docking，按经典 IDA 工作方式
 | `X` | Xrefs |
 | `Ctrl+Shift+F` | CFG |
 | `Ctrl+Shift+U` / `Ctrl+Shift+D` | Callers / Callees |
+| `Ctrl+Shift+A` | 单函数分析 |
 | `Ctrl+I` / `Ctrl+E` | Imports / Exports |
 | `Ctrl+Shift+S` | Strings list |
 | `Ctrl+F` | 打开十六进制字节搜索 |
