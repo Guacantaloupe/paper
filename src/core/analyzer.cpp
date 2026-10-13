@@ -113,26 +113,44 @@ bool is_prologue(const Instruction& instruction) {
     return false;
 }
 
-std::vector<std::uint8_t> parse_hex_bytes(std::string_view input) {
-    std::vector<std::uint8_t> result;
+struct HexPattern {
+    std::vector<std::uint8_t> bytes;
+    std::vector<std::uint8_t> masks;
+    bool valid = false;
+};
+
+HexPattern parse_hex_pattern(std::string_view input) {
+    HexPattern result;
     int high = -1;
+    std::uint8_t mask = 0;
     for (std::size_t index = 0; index < input.size(); ++index) {
         const char c = input[index];
         if (c == '0' && index + 1 < input.size() && (input[index + 1] == 'x' || input[index + 1] == 'X') && high < 0) {
             ++index;
             continue;
         }
-        if (std::isspace(static_cast<unsigned char>(c)) || c == ',' || c == '_') continue;
-        const auto digit = std::isdigit(static_cast<unsigned char>(c)) ? c - '0' :
-            (std::tolower(static_cast<unsigned char>(c)) >= 'a' && std::tolower(static_cast<unsigned char>(c)) <= 'f' ? std::tolower(static_cast<unsigned char>(c)) - 'a' + 10 : -1);
-        if (digit < 0) return {};
-        if (high < 0) high = digit;
-        else {
-            result.push_back(static_cast<std::uint8_t>((high << 4) | digit));
+        if (std::isspace(static_cast<unsigned char>(c)) || c == ',' || c == '_') {
+            if (high >= 0) return {};
+            continue;
+        }
+        int digit = -1;
+        if (std::isdigit(static_cast<unsigned char>(c))) digit = c - '0';
+        else if (std::tolower(static_cast<unsigned char>(c)) >= 'a' && std::tolower(static_cast<unsigned char>(c)) <= 'f') digit = std::tolower(static_cast<unsigned char>(c)) - 'a' + 10;
+        const bool wildcard = c == '?';
+        if (digit < 0 && !wildcard) return {};
+        if (high < 0) {
+            high = wildcard ? 0 : digit;
+            mask = wildcard ? 0 : 0xf0;
+        } else {
+            const auto value = static_cast<std::uint8_t>((high << 4) | (wildcard ? 0 : digit));
+            result.bytes.push_back(value);
+            result.masks.push_back(static_cast<std::uint8_t>(mask | (wildcard ? 0 : 0x0f)));
             high = -1;
+            mask = 0;
         }
     }
-    if (high >= 0) return {};
+    if (high >= 0 || result.bytes.empty()) return {};
+    result.valid = true;
     return result;
 }
 
@@ -691,12 +709,19 @@ Json Analyzer::list_strings(const Json& arguments) const {
 
 Json Analyzer::search_bytes(const Json& arguments) const {
     std::shared_lock lock(mutex_);
-    const auto pattern = arguments.find("pattern") ? parse_hex_bytes(arguments.find("pattern")->string_or("")) : std::vector<std::uint8_t>{};
+    const auto pattern = arguments.find("pattern") ? parse_hex_pattern(arguments.find("pattern")->string_or("")) : HexPattern{};
     const auto limit = std::min<std::size_t>(argument_size(arguments, "limit", 200), 50'000);
     Json result = Json::array();
-    if (pattern.empty() || pattern.size() > image_.bytes().size()) return result;
-    for (std::size_t offset = 0; offset + pattern.size() <= image_.bytes().size(); ++offset) {
-        if (!std::equal(pattern.begin(), pattern.end(), image_.bytes().begin() + offset)) continue;
+    if (!pattern.valid || pattern.bytes.size() > image_.bytes().size()) return result;
+    for (std::size_t offset = 0; offset + pattern.bytes.size() <= image_.bytes().size(); ++offset) {
+        bool matches = true;
+        for (std::size_t index = 0; index < pattern.bytes.size(); ++index) {
+            if ((image_.bytes()[offset + index] & pattern.masks[index]) != (pattern.bytes[index] & pattern.masks[index])) {
+                matches = false;
+                break;
+            }
+        }
+        if (!matches) continue;
         Json item = Json::object();
         item["file_offset"] = static_cast<std::uint64_t>(offset);
         for (const auto& section : image_.sections()) {
