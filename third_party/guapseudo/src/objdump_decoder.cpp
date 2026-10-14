@@ -207,7 +207,13 @@ std::unordered_map<std::uint64_t, Instruction> ObjdumpDecoder::decode(const Bina
     if (image.format == ImageFormat::Raw) {
         std::ostringstream base;
         base << std::hex << image.code_base;
-        command = "objdump -D -b binary -m i386:x86-64 --adjust-vma=0x" + base.str() + " ";
+        // -M intel is not optional here. The non-raw branch above already passes it, but this
+        // assignment REPLACES the whole command string, so the raw branch used to run objdump
+        // with its default AT&T syntax. The decoder still parsed the output, which is why the
+        // defect was not a crash: it silently produced operands in the wrong order, so a
+        // `mov r9d, 0xc0` came out as `$0xc0 = r9d_0;` -- source and destination swapped. It was
+        // found by decompiling a function whose verified constant 0xc0 appeared on the wrong side.
+        command = "objdump -D -M intel -b binary -m i386:x86-64 --adjust-vma=0x" + base.str() + " ";
     }
     command += "\"" + image.source_name + "\" 2>NUL";
     auto* pipe = process_open(command.c_str(), "r");
