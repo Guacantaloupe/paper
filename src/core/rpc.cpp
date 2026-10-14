@@ -201,6 +201,9 @@ Json McpServer::handle(const Json& request) {
                         result["ok"] = false;
                         result["error"] = "cannot write output: " + output_path->as_string();
                     } else {
+                        if (const auto* module_identity = result.find("module"); module_identity && module_identity->is_object() && module_identity->find("identity")) {
+                            result["binary_identity"] = *module_identity->find("identity");
+                        }
                         output << result.dump() << '\n';
                         if (!output.good()) {
                             ok = false;
@@ -508,6 +511,32 @@ Json McpServer::tool_list() const {
         Json properties = Json::object();
         properties["path"] = schema_string();
         tools.push_back(tool(name, name == std::string_view("save_database") ? "Save names, comments, and bookmarks to a Paper sidecar database." : "Load names, comments, and bookmarks from a Paper sidecar database.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["path_a"] = schema_string();
+        properties["path_b"] = schema_string();
+        tools.push_back(tool("diff_binary", "Compare two PE builds using identity, normalized function content hashes, names, call neighborhoods, and referenced strings.", std::move(properties), required_list({"path_a", "path_b"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["path"] = schema_string();
+        tools.push_back(tool("export_annotations", "Export names, comments, and bookmarks with binary and per-function identities.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["path"] = schema_string();
+        properties["annotations"] = Json::object();
+        properties["address_map"] = Json::object();
+        properties["allow_address_fallback"] = schema_bool();
+        tools.push_back(tool("import_annotations", "Import annotations only after identity/hash validation or an explicit old-to-new address map.", std::move(properties)));
+    }
+    {
+        Json properties = Json::object();
+        properties["path"] = schema_string();
+        properties["include_xrefs"] = schema_bool();
+        properties["include_instructions"] = schema_bool();
+        tools.push_back(tool("export_snapshot", "Export one self-identifying analysis snapshot for downstream AI tools and later diffing.", std::move(properties)));
     }
     {
         Json properties = Json::object();
