@@ -72,6 +72,14 @@ public:
     Json call_graph(const Json& arguments) const;
     Json analysis_stats() const;
 
+    // Binary identity and update/migration helpers.  These APIs make a
+    // snapshot self-describing and prevent stale address-based annotations
+    // from being silently applied to a rebuilt executable.
+    Json diff_binary(const Json& arguments) const;
+    Json export_annotations(const Json& arguments) const;
+    Json import_annotations(const Json& arguments);
+    Json export_snapshot(const Json& arguments) const;
+
     // Host applications can register deterministic decoders for proprietary
     // asset containers without teaching the PE core about every game format.
     // The callback receives the requested format and path and returns a JSON
@@ -136,6 +144,11 @@ private:
     static Address argument_address(const Json& arguments, std::string_view key);
     static std::size_t argument_size(const Json& arguments, std::string_view key, std::size_t fallback);
     static std::string address_string(Address address);
+    Json identity_json() const;
+    std::string function_content_hash(const Function& function) const;
+    Json function_identity_json(const Function& function) const;
+    Json annotation_document(bool include_identity) const;
+    bool apply_annotation(Address address, std::string_view kind, std::string_view value);
     Json xref_json(const Xref& xref) const;
     std::vector<VtableRecord> discover_vtables() const;
     std::vector<RttiRecord> discover_rtti() const;
@@ -167,6 +180,8 @@ private:
     mutable bool rtti_cache_valid_ = false;
     mutable std::unordered_map<Address, std::vector<SwitchRecord>> switch_cache_;
     mutable std::mutex switch_cache_mutex_;
+    mutable std::unordered_map<Address, std::string> function_hash_cache_;
+    mutable std::mutex function_hash_cache_mutex_;
     std::unordered_map<std::string, std::vector<std::size_t>> mnemonic_index_;
     std::unordered_map<std::string, AssetDecoder> asset_decoders_;
     std::unordered_map<Address, std::string> names_;
