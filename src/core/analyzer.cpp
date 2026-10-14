@@ -816,12 +816,38 @@ std::string Analyzer::function_content_hash(const Function& function) const {
     // normalized form removes address-dependent encodings (relative calls,
     // RIP-relative displacements, and PE base relocations) while preserving
     // opcode, operand shape, instruction length, and all other constants.
+    // GAPS BETWEEN INSTRUCTIONS ARE HASHED TOO, and this is a measured defect rather than a
+    // precaution. The loop below walks decoded instructions, so any byte the decoder did not turn
+    // into an instruction was not hashed at all, and a change inside it was invisible. Measured on
+    // Sky.exe: of 25 sampled functions, TWO had uncovered bytes -- 21 bytes across 2,481 -- so
+    // roughly one function in twelve carries a region its fingerprint cannot see. A controlled test
+    // made the consequence concrete: one byte written at a known address inside such a region
+    // produced an IDENTICAL content hash, and diffing the two files reported nothing changed.
+    //
+    // The bytes are hashed VERBATIM, which is safe here in a way it would not be for a decoded
+    // instruction: a gap is data or an instruction form the decoder does not model, so it holds no
+    // relative displacement that moves when something else in the image moves. A decoded
+    // instruction cannot be hashed verbatim precisely because its displacement does move, which is
+    // why the loop below normalises it instead.
     std::vector<std::uint8_t> normalized;
     const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function.start,
         [](const Instruction& instruction, Address value) { return instruction.address < value; });
     const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function.end,
         [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    Address cursor = function.start;
+    const auto append_gap = [&](Address from, Address to) {
+        if (to <= from) return;
+        normalized.push_back(0xfd);  // gap marker, distinct from the 0xfe instruction marker
+        for (Address a = from; a < to; ++a) {
+            const auto offset = image_.rva_to_file_offset(
+                static_cast<std::uint32_t>(a - image_.info().image_base));
+            normalized.push_back((offset.has_value() && *offset < image_.bytes().size())
+                                     ? image_.bytes()[*offset]
+                                     : 0x00);
+        }
+    };
     for (auto it = begin; it != end; ++it) {
+        append_gap(cursor, it->address);
         normalized.push_back(0xfe); // instruction boundary marker
         normalized.push_back(it->length);
         std::array<std::uint8_t, 16> bytes = it->bytes;
@@ -844,7 +870,9 @@ std::string Analyzer::function_content_hash(const Function& function) const {
             for (std::size_t i = offset; i < std::min(count, offset + width); ++i) bytes[i] = 0;
         }
         normalized.insert(normalized.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(count));
+        cursor = it->address + count;
     }
+    append_gap(cursor, function.end);
     if (normalized.empty()) normalized.push_back(0);
     const auto hash = PeImage::sha256(normalized.data(), normalized.size());
     {
@@ -3388,56 +3416,78 @@ Json Analyzer::diff_binary(const Json& arguments) const {
     struct FunctionRef {
         const Function* function = nullptr;
         std::string hash;
-        std::string neighborhood;
-        std::string strings;
     };
+
+    // NEIGHBOURHOOD AND STRING KEYS ARE COMPUTED ON DEMAND, NOT FOR EVERY FUNCTION UP FRONT.
+    //
+    // This is a change made for MEASURED reasons. Computing all three keys eagerly means holding
+    // two concatenated strings per function -- 164,424 functions on each side of a real image --
+    // and running it against two 45-megabyte builds drove free memory from 1.92 gigabytes to 0.34
+    // without completing. The keys are only consulted by the two LAST matching passes, which run on
+    // whatever the name, address and hash passes did not resolve, and on a real update that residue
+    // is small.
+    //
+    // The cache makes the cost linear rather than quadratic: `unique_candidate` scans every unused
+    // function for each unmatched one, so without a cache a pass would recompute the same key
+    // thousands of times. With it, each key is built once per pass and looked up thereafter. The
+    // cache is per pass and released when the pass ends, so the memory it holds is proportional to
+    // what the pass actually examined rather than to the size of the corpus.
+    auto strings_key_of = [](const Analyzer& analyzer, const Function& function) {
+        std::vector<std::string> values;
+        const auto begin = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.start,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        const auto end = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.end,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        for (auto it = begin; it != end; ++it) {
+            if (!it->target) continue;
+            const auto found = std::find_if(analyzer.strings_.begin(), analyzer.strings_.end(), [&](const StringLiteral& string) {
+                return string.address == *it->target;
+            });
+            if (found != analyzer.strings_.end()) values.push_back(found->value);
+        }
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end()), values.end());
+        std::ostringstream key;
+        for (const auto& value : values) key << value.size() << ':' << value << '|';
+        return key.str();
+    };
+    auto neighborhood_key_of = [](const Analyzer& analyzer, const Function& function) {
+        std::vector<std::string> values;
+        const auto begin = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.start,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        const auto end = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.end,
+            [](const Instruction& instruction, Address value) { return instruction.address < value; });
+        for (auto it = begin; it != end; ++it) {
+            if ((it->kind != InstructionKind::Call && it->kind != InstructionKind::IndirectCall) || !it->target) continue;
+            if (const auto* callee = analyzer.function_at(*it->target)) values.push_back(analyzer.function_content_hash(*callee));
+            else {
+                const auto import = std::find_if(analyzer.image_.imports().begin(), analyzer.image_.imports().end(), [&](const ImportSymbol& symbol) { return symbol.thunk == *it->target; });
+                if (import != analyzer.image_.imports().end()) values.push_back(import->library + "!" + import->name);
+            }
+        }
+        std::sort(values.begin(), values.end());
+        std::ostringstream key;
+        for (const auto& value : values) key << value.size() << ':' << value << '|';
+        return key.str();
+    };
+
     auto build_refs = [](const Analyzer& analyzer) {
         std::vector<FunctionRef> refs;
         std::shared_lock lock(analyzer.mutex_);
         refs.reserve(analyzer.functions_.size());
-        auto strings_key = [&](const Function& function) {
-            std::vector<std::string> values;
-            const auto begin = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.start,
-                [](const Instruction& instruction, Address value) { return instruction.address < value; });
-            const auto end = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.end,
-                [](const Instruction& instruction, Address value) { return instruction.address < value; });
-            for (auto it = begin; it != end; ++it) {
-                if (!it->target) continue;
-                const auto found = std::find_if(analyzer.strings_.begin(), analyzer.strings_.end(), [&](const StringLiteral& string) {
-                    return string.address == *it->target;
-                });
-                if (found != analyzer.strings_.end()) values.push_back(found->value);
-            }
-            std::sort(values.begin(), values.end());
-            values.erase(std::unique(values.begin(), values.end()), values.end());
-            std::ostringstream key;
-            for (const auto& value : values) key << value.size() << ':' << value << '|';
-            return key.str();
-        };
-        auto neighborhood_key = [&](const Function& function) {
-            std::vector<std::string> values;
-            const auto begin = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.start,
-                [](const Instruction& instruction, Address value) { return instruction.address < value; });
-            const auto end = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.end,
-                [](const Instruction& instruction, Address value) { return instruction.address < value; });
-            for (auto it = begin; it != end; ++it) {
-                if ((it->kind != InstructionKind::Call && it->kind != InstructionKind::IndirectCall) || !it->target) continue;
-                if (const auto* callee = analyzer.function_at(*it->target)) values.push_back(analyzer.function_content_hash(*callee));
-                else {
-                    const auto import = std::find_if(analyzer.image_.imports().begin(), analyzer.image_.imports().end(), [&](const ImportSymbol& symbol) { return symbol.thunk == *it->target; });
-                    if (import != analyzer.image_.imports().end()) values.push_back(import->library + "!" + import->name);
-                }
-            }
-            std::sort(values.begin(), values.end());
-            std::ostringstream key;
-            for (const auto& value : values) key << value.size() << ':' << value << '|';
-            return key.str();
-        };
         for (const auto& function : analyzer.functions_) {
-            refs.push_back(FunctionRef{&function, analyzer.function_content_hash(function), neighborhood_key(function), strings_key(function)});
+            refs.push_back(FunctionRef{&function, analyzer.function_content_hash(function)});
         }
         return refs;
     };
+
+    //: How many pair examinations the two expensive fallback passes may perform in total. A pass
+    //: examines every unmatched old function against every unused new function, so the product is
+    //: the work. It is capped rather than left unbounded because these passes exist to resolve a
+    //: residue: when the name, address and hash passes leave tens of thousands unmatched, the two
+    //: binaries are not the same program and no amount of key comparison will make them so. The cap
+    //: is reported in the result rather than silently applied.
+    constexpr std::uint64_t kFallbackPairLimit = 16'000'000;
 
     const auto old_functions = build_refs(left);
     const auto new_functions = build_refs(right);
@@ -3453,6 +3503,32 @@ Json Analyzer::diff_binary(const Json& arguments) const {
         return candidate;
     };
     auto generated_name = [](std::string_view name) { return name.rfind("sub_", 0) == 0; };
+
+    // SAME ADDRESS AND SAME CONTENT IS NOT AN AMBIGUOUS MATCH. The passes below refuse to pair a
+    // function when more than one candidate fits, on the principle that ambiguous evidence is never
+    // guessed, and that principle is right in general: two candidates at different addresses say
+    // different things about where the function went. But a function that is still AT THE SAME
+    // ADDRESS with the SAME CONTENT is not a guess at all, and without this pass the refusal makes
+    // `diff_binary(x, x)` non-empty, because a hash shared by two functions leaves both unmatched
+    // and both are then reported as added and removed together. Measured: comparing a DLL with
+    // itself returned `unchanged 129, added 4`, and the four were exactly the two pairs of
+    // hash-duplicates, whose shared hashes appeared ZERO times in the unchanged list.
+    //
+    // A self-diff must be empty. Adding this pass makes it so without weakening the ambiguity rule
+    // for the case that rule was written for, since a moved function is not at its old address.
+    for (std::size_t i = 0; i < old_functions.size(); ++i) {
+        if (matched[i] >= 0) continue;
+        const auto old_start = old_functions[i].function->start;
+        for (std::size_t index = 0; index < new_functions.size(); ++index) {
+            if (new_used[index]) continue;
+            if (new_functions[index].function->start != old_start) continue;
+            if (new_functions[index].hash != old_functions[i].hash) continue;
+            matched[i] = static_cast<int>(index);
+            new_used[index] = true;
+            break;
+        }
+    }
+
     for (std::size_t i = 0; i < old_functions.size(); ++i) {
         const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) {
             return !generated_name(old_ref.function->name) && !generated_name(new_ref.function->name) && old_ref.function->name == new_ref.function->name;
@@ -3463,13 +3539,56 @@ Json Analyzer::diff_binary(const Json& arguments) const {
         const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) { return old_ref.hash == new_ref.hash; });
         if (candidate >= 0) { matched[i] = candidate; new_used[static_cast<std::size_t>(candidate)] = true; }
     }
-    for (std::size_t i = 0; i < old_functions.size(); ++i) if (matched[i] < 0) {
-        const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) { return !old_ref.neighborhood.empty() && old_ref.neighborhood == new_ref.neighborhood; });
-        if (candidate >= 0) { matched[i] = candidate; new_used[static_cast<std::size_t>(candidate)] = true; }
-    }
-    for (std::size_t i = 0; i < old_functions.size(); ++i) if (matched[i] < 0) {
-        const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) { return !old_ref.strings.empty() && old_ref.strings == new_ref.strings; });
-        if (candidate >= 0) { matched[i] = candidate; new_used[static_cast<std::size_t>(candidate)] = true; }
+    // THE TWO FALLBACK PASSES COMPUTE THEIR KEYS ON DEMAND AND ARE CAPPED.
+    //
+    // Each pass examines every unmatched old function against every unused new function, so their
+    // product is the work. They exist to resolve a RESIDUE -- what the name, address, hash and
+    // structural passes could not -- and on a real update that residue is small. When it is not
+    // small, the two binaries are not the same program and comparing string sets will not make them
+    // so; running anyway is what drove memory to 0.34 gigabytes without finishing. So the product
+    // is checked first, and when it exceeds the cap the pass is SKIPPED AND SAID TO BE SKIPPED, in
+    // the result, because a silently partial answer is worse than a declared one.
+    std::size_t unmatched_old = 0, unused_new = 0;
+    for (std::size_t i = 0; i < old_functions.size(); ++i) if (matched[i] < 0) ++unmatched_old;
+    for (std::size_t i = 0; i < new_functions.size(); ++i) if (!new_used[i]) ++unused_new;
+    const bool fallback_affordable =
+        static_cast<std::uint64_t>(unmatched_old) * static_cast<std::uint64_t>(unused_new)
+            <= kFallbackPairLimit;
+
+    std::uint64_t neighborhood_matched = 0, strings_matched = 0;
+    if (fallback_affordable) {
+        for (int which = 0; which < 2; ++which) {
+            // One cache per pass, released when the pass ends, so what it holds is proportional to
+            // what the pass examined rather than to the size of the corpus.
+            std::unordered_map<Address, std::string> new_keys;
+            auto key_of = [&](const Analyzer& analyzer, const Function& function) {
+                return which == 0 ? neighborhood_key_of(analyzer, function)
+                                  : strings_key_of(analyzer, function);
+            };
+            for (std::size_t i = 0; i < old_functions.size(); ++i) {
+                if (matched[i] >= 0) continue;
+                const auto old_key = key_of(left, *old_functions[i].function);
+                if (old_key.empty()) continue;
+                int candidate = -1;
+                bool ambiguous = false;
+                for (std::size_t index = 0; index < new_functions.size(); ++index) {
+                    if (new_used[index]) continue;
+                    auto found = new_keys.find(new_functions[index].function->start);
+                    if (found == new_keys.end()) {
+                        found = new_keys.emplace(new_functions[index].function->start,
+                                                 key_of(right, *new_functions[index].function)).first;
+                    }
+                    if (found->second != old_key) continue;
+                    if (candidate != -1) { ambiguous = true; break; }
+                    candidate = static_cast<int>(index);
+                }
+                if (!ambiguous && candidate >= 0) {
+                    matched[i] = candidate;
+                    new_used[static_cast<std::size_t>(candidate)] = true;
+                    if (which == 0) ++neighborhood_matched; else ++strings_matched;
+                }
+            }
+        }
     }
 
     Json matches = Json::array();
@@ -3505,6 +3624,28 @@ Json Analyzer::diff_binary(const Json& arguments) const {
     }
     for (std::size_t i = 0; i < new_functions.size(); ++i) if (!new_used[i]) added.push_back(right.function_identity_json(*new_functions[i].function));
     result["ok"] = true;
+    // A partial answer says it is partial. When the fallback passes were skipped, the caller is
+    // told so and told why, rather than being handed a diff that silently lacked the structural
+    // matching and could be read as "these functions have no counterpart".
+    {
+        Json fallback = Json::object();
+        fallback["ran"] = fallback_affordable;
+        fallback["unmatched_before"] = static_cast<std::uint64_t>(unmatched_old);
+        fallback["unused_before"] = static_cast<std::uint64_t>(unused_new);
+        fallback["pair_limit"] = kFallbackPairLimit;
+        fallback["pairs_examined"] =
+            static_cast<std::uint64_t>(unmatched_old) * static_cast<std::uint64_t>(unused_new);
+        fallback["matched_by_neighborhood"] = neighborhood_matched;
+        fallback["matched_by_strings"] = strings_matched;
+        if (!fallback_affordable) {
+            fallback["skipped_because"] =
+                "the unmatched and unused sets are too large for the structural passes to be worth "
+                "running; when name, address, hash and structural matching have all failed at this "
+                "scale the two binaries are not the same program, and the passes exist to resolve a "
+                "residue rather than a corpus";
+        }
+        result["fallback_matching"] = std::move(fallback);
+    }
     result["path_a"] = path_a;
     result["path_b"] = path_b;
     result["identity_a"] = left.identity_json();
