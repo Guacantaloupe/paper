@@ -244,6 +244,13 @@ Json McpServer::tool_list() const {
     {
         Json properties = Json::object();
         properties["path"] = schema_string();
+        properties["threads"] = schema_number();
+        properties["max_function_bytes"] = schema_number();
+        tools.push_back(tool("decompile_pseudoc", "Generate Ghidra-style pseudo-C with GuaPseudo-C SSA, bit-vector, CFG structuring, and multi-core analysis.", std::move(properties), required_list({"path"})));
+    }
+    {
+        Json properties = Json::object();
+        properties["path"] = schema_string();
         tools.push_back(tool("open_binary", "Open and index a PE executable or DLL. This must be called before querying the module.", std::move(properties), required_list({"path"})));
     }
     tools.push_back(tool("module_info", "Return PE identity, architecture, image base, and entry point.", Json::object()));

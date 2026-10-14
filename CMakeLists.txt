@@ -18,8 +18,19 @@ add_library(paper_core STATIC
     src/core/x86_decoder.cpp
     src/core/analyzer.cpp
     src/core/rpc.cpp
+    src/core/guapseudo_bridge.cpp
+    third_party/guapseudo/src/analyzer.cpp
+    third_party/guapseudo/src/binary_image.cpp
+    third_party/guapseudo/src/bitvector.cpp
+    third_party/guapseudo/src/cfg.cpp
+    third_party/guapseudo/src/ghidra_heuristics.cpp
+    third_party/guapseudo/src/objdump_decoder.cpp
+    third_party/guapseudo/src/pseudoc_printer.cpp
+    third_party/guapseudo/src/ssa.cpp
+    third_party/guapseudo/src/structurer.cpp
+    third_party/guapseudo/src/x86_decoder.cpp
 )
-target_include_directories(paper_core PUBLIC include)
+target_include_directories(paper_core PUBLIC include third_party/guapseudo/include)
 target_link_libraries(paper_core PUBLIC Threads::Threads)
 if(WIN32)
     target_link_libraries(paper_core PUBLIC dbghelp)

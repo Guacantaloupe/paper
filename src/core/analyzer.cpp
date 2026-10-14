@@ -1,4 +1,5 @@
 #include "paper/core/analyzer.hpp"
+#include "paper/core/guapseudo_bridge.hpp"
 
 #include "paper/core/x86_decoder.hpp"
 
@@ -3890,6 +3891,10 @@ Json Analyzer::decode_asset(const Json& arguments) const {
 }
 
 Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok) {
+    if (name == "decompile_pseudoc") {
+        ok = true;
+        return guapseudo_decompile(arguments);
+    }
     ok = true;
     std::string argument_error;
     Json validation_error = Json::object();
