@@ -57,6 +57,11 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 30. `set_name()`、`set_comment()`、`set_bookmark()`：把已确认的逆向结论写回 Paper 数据库。
 31. `save_database({"path":"..."})`、`load_database()`：保存或恢复数据库；保存路径可以指向用户可写目录，不必写回 Program Files。
 32. `decode_asset({"format":"mesh","path":"..."})`：调用宿主注册的 C++ 资产解码器。Paper 不猜自定义格式；注册的解码器必须自己返回可验证字段。
+33. `module_info()`：读取 `sha256`、`text_sha256`、`pdata_sha256` 和组合后的 `identity`，每次更新 EXE 后都应重新确认。
+34. `list_functions()` / `get_function()`：每个函数带 `content_hash`，用于跨版本匹配，而不是把旧绝对地址当作身份。
+35. `diff_binary({"path_a":"old.exe","path_b":"new.exe"})`：按名称、归一化函数哈希、调用邻域和引用字符串匹配函数，返回 `unchanged`、`moved`、`changed`、`added`、`removed` 和 `address_map`。
+36. `export_annotations()` / `import_annotations()`：导出带二进制身份、函数哈希和函数内偏移的名称/注释/书签；身份不一致时只接受唯一哈希或显式地址映射。
+37. `export_snapshot({"path":"out/paper.snapshot.json"})`：一次写出带身份盖章的函数、xrefs、字符串、虚表、RTTI、PE 元数据和注解快照。
 
 ## 经典 xrefs 查询
 
@@ -97,7 +102,7 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 {"pattern":"lea {reg},[rip+{disp}]","target_in":["0x141f75506"],"output":"out/scan.json"}
 ```
 
-服务器会把工具返回值原样写成 JSON；响应另外返回 `{ "ok": true, "output": "...", "result": ... }` 状态包。目录必须预先存在，Paper 不执行 shell 或 Python。
+服务器会把工具返回值原样写成 JSON；响应另外返回 `{ "ok": true, "output": "...", "binary_identity": {...}, "result": ... }` 状态包。目录必须预先存在，Paper 不执行 shell 或 Python。所有 Paper 直接生成的数据库、注解和快照文件都包含 `identity`；这使得文件脱离当前会话后仍能判断它对应哪一个 EXE。
 
 ## 工具清单
 
@@ -148,6 +153,9 @@ AI 接到一个逆向任务后，可以按下面的顺序调用：
 | `set_name` / `set_comment` | 写入或清除地址标注 |
 | `set_bookmark` | 写入或清除地址书签 |
 | `save_database` / `load_database` | 保存或加载 Paper 分析数据库 |
+| `diff_binary` | 比较两个 EXE，输出函数状态和旧到新地址映射 |
+| `export_annotations` / `import_annotations` | 带指纹和函数哈希迁移名称、注释、书签 |
+| `export_snapshot` | 一次导出带二进制身份的完整分析快照 |
 | `analysis_stats` | 分析时间、线程数和索引规模 |
 
 所有查询都读取已经建立的内存索引。`xrefs_to`、`xrefs_from`、函数查找和 CFG 查询不重新扫描文件；分页参数用于避免大程序把整个结果一次性送给 AI。`module_info.runtime_function_count` 可以用来判断 PE 是否提供了 x64 `.pdata` 函数边界证据；`analysis_stats` 可用来记录多核分析耗时和工作线程数。
