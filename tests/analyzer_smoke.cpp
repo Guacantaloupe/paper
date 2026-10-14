@@ -96,6 +96,9 @@ int main() {
     std::string error;
     assert(analyzer.open_file(path.string(), error));
     assert(error.empty());
+    const auto module_identity = analyzer.module_info();
+    assert(module_identity.find("sha256") && module_identity.find("sha256")->as_string().size() == 64);
+    assert(module_identity.find("text_sha256") && module_identity.find("text_sha256")->as_string().size() == 64);
 
     paper::Json args = paper::Json::object();
     args["address"] = "0x140003060";
@@ -161,6 +164,7 @@ int main() {
     noreturn_args["address"] = "0x140001000";
     const auto function_summary = analyzer.get_function(noreturn_args);
     assert(function_summary.find("noreturn") && function_summary.find("noreturn")->as_bool());
+    assert(function_summary.find("content_hash") && function_summary.find("content_hash")->as_string().size() == 64);
     const auto noreturns = analyzer.list_noreturn_functions(paper::Json::object());
     assert(noreturns.is_array() && !noreturns.array_items().empty());
     const auto dataflow = analyzer.function_dataflow(noreturn_args);
@@ -219,6 +223,26 @@ int main() {
     const auto saved = analyzer.save_database(paper::Json::object());
     assert(saved.find("ok") && saved.find("ok")->as_bool());
 
+    const auto annotation_path = path.string() + ".annotations.json";
+    paper::Json export_args = paper::Json::object();
+    export_args["path"] = annotation_path;
+    const auto exported_annotations = analyzer.export_annotations(export_args);
+    assert(exported_annotations.find("ok") && exported_annotations.find("ok")->as_bool());
+    assert(exported_annotations.find("identity") && exported_annotations.find("identity")->find("sha256"));
+    const auto snapshot_path = path.string() + ".snapshot.json";
+    paper::Json snapshot_args = paper::Json::object();
+    snapshot_args["path"] = snapshot_path;
+    snapshot_args["include_xrefs"] = true;
+    const auto snapshot = analyzer.export_snapshot(snapshot_args);
+    assert(snapshot.find("identity") && snapshot.find("identity")->find("sha256"));
+    assert(snapshot.find("functions") && snapshot.find("functions")->is_array());
+    paper::Json diff_args = paper::Json::object();
+    diff_args["path_a"] = path.string();
+    diff_args["path_b"] = path.string();
+    const auto diff = analyzer.diff_binary(diff_args);
+    assert(diff.find("ok") && diff.find("ok")->as_bool());
+    assert(diff.find("unchanged_count") && diff.find("unchanged_count")->as_u64() > 0);
+
     paper::Analyzer reloaded;
     assert(reloaded.open_file(path.string(), error));
     paper::Json named_args = paper::Json::object();
@@ -228,5 +252,7 @@ int main() {
     assert(reloaded.get_function(named_args).find("name")->as_string() == "entry_fixture");
     assert(reloaded.list_bookmarks(paper::Json::object()).array_items().size() == 1);
     std::filesystem::remove(path.string() + ".paper.json");
+    std::filesystem::remove(annotation_path);
+    std::filesystem::remove(snapshot_path);
     return 0;
 }
