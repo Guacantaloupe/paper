@@ -283,6 +283,10 @@ bool Analyzer::open_file(const std::string& path, std::string& error) {
             switch_cache_.clear();
         }
         mnemonic_index_.clear();
+        {
+            std::lock_guard hash_lock(function_hash_cache_mutex_);
+            function_hash_cache_.clear();
+        }
         names_.clear();
         comments_.clear();
         bookmarks_.clear();
@@ -323,6 +327,10 @@ void Analyzer::clear() {
         switch_cache_.clear();
     }
     mnemonic_index_.clear();
+    {
+        std::lock_guard hash_lock(function_hash_cache_mutex_);
+        function_hash_cache_.clear();
+    }
     names_.clear();
     comments_.clear();
     bookmarks_.clear();
@@ -785,6 +793,77 @@ std::string Analyzer::address_string(Address address) {
     return out.str();
 }
 
+Json Analyzer::identity_json() const {
+    Json identity = Json::object();
+    identity["path"] = image_.info().path;
+    identity["sha256"] = image_.info().sha256;
+    identity["text_sha256"] = image_.info().text_sha256;
+    identity["pdata_sha256"] = image_.info().pdata_sha256;
+    identity["image_base"] = address_json(image_.info().image_base);
+    identity["image_size"] = image_.info().image_size;
+    identity["architecture"] = image_.info().architecture;
+    return identity;
+}
+
+std::string Analyzer::function_content_hash(const Function& function) const {
+    {
+        std::lock_guard cache_lock(function_hash_cache_mutex_);
+        const auto cached = function_hash_cache_.find(function.start);
+        if (cached != function_hash_cache_.end()) return cached->second;
+    }
+
+    // Hash decoded instruction bytes rather than the whole section.  The
+    // normalized form removes address-dependent encodings (relative calls,
+    // RIP-relative displacements, and PE base relocations) while preserving
+    // opcode, operand shape, instruction length, and all other constants.
+    std::vector<std::uint8_t> normalized;
+    const auto begin = std::lower_bound(instructions_.begin(), instructions_.end(), function.start,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    const auto end = std::lower_bound(instructions_.begin(), instructions_.end(), function.end,
+        [](const Instruction& instruction, Address value) { return instruction.address < value; });
+    for (auto it = begin; it != end; ++it) {
+        normalized.push_back(0xfe); // instruction boundary marker
+        normalized.push_back(it->length);
+        std::array<std::uint8_t, 16> bytes = it->bytes;
+        const auto count = std::min<std::size_t>(it->byte_count, bytes.size());
+        auto zero_tail = [&](std::size_t width) {
+            if (width <= count) for (std::size_t i = 0; i < width; ++i) bytes[count - 1 - i] = 0;
+        };
+        if (it->target && (it->kind == InstructionKind::Call || it->kind == InstructionKind::Jump ||
+                           it->kind == InstructionKind::ConditionalJump)) {
+            if (count >= 2 && bytes[0] == 0xeb) zero_tail(1);
+            else if (count >= 5 && (bytes[0] == 0xe8 || bytes[0] == 0xe9)) zero_tail(4);
+            else if (count >= 6 && bytes[0] == 0x0f && bytes[1] >= 0x80 && bytes[1] <= 0x8f) zero_tail(4);
+            else if (count >= 2 && bytes[0] >= 0x70 && bytes[0] <= 0x7f) zero_tail(1);
+        }
+        if (it->rip_relative && count >= 4) zero_tail(4);
+        for (const auto& relocation : image_.relocations()) {
+            const auto width = relocation.type == 10 ? std::size_t(8) : relocation.type == 3 ? std::size_t(4) : std::size_t(0);
+            if (width == 0 || relocation.address < it->address || relocation.address >= it->address + count) continue;
+            const auto offset = static_cast<std::size_t>(relocation.address - it->address);
+            for (std::size_t i = offset; i < std::min(count, offset + width); ++i) bytes[i] = 0;
+        }
+        normalized.insert(normalized.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(count));
+    }
+    if (normalized.empty()) normalized.push_back(0);
+    const auto hash = PeImage::sha256(normalized.data(), normalized.size());
+    {
+        std::lock_guard cache_lock(function_hash_cache_mutex_);
+        function_hash_cache_.emplace(function.start, hash);
+    }
+    return hash;
+}
+
+Json Analyzer::function_identity_json(const Function& function) const {
+    Json result = Json::object();
+    result["address"] = address_json(function.start);
+    result["end"] = address_json(function.end);
+    result["name"] = function.name;
+    result["content_hash"] = function_content_hash(function);
+    result["size"] = static_cast<std::uint64_t>(function.end - function.start);
+    return result;
+}
+
 Json Analyzer::module_info() const {
     std::shared_lock lock(mutex_);
     Json result = Json::object();
@@ -798,6 +877,10 @@ Json Analyzer::module_info() const {
     result["entry_rva"] = image_.info().entry_rva;
     result["image_size"] = image_.info().image_size;
     result["pe32_plus"] = image_.info().pe32_plus;
+    result["sha256"] = image_.info().sha256;
+    result["text_sha256"] = image_.info().text_sha256;
+    result["pdata_sha256"] = image_.info().pdata_sha256;
+    result["identity"] = identity_json();
     result["runtime_function_count"] = static_cast<std::uint64_t>(image_.runtime_functions().size());
     result["tls_callback_count"] = static_cast<std::uint64_t>(image_.tls_callbacks().size());
     result["relocation_count"] = static_cast<std::uint64_t>(image_.relocations().size());
@@ -1635,6 +1718,8 @@ Json Analyzer::list_noreturn_functions(const Json& arguments) const {
         Json item = Json::object();
         item["address"] = address_json(function.start);
         item["name"] = function.name;
+        item["content_hash"] = function_content_hash(function);
+        item["size"] = static_cast<std::uint64_t>(function.end - function.start);
         item["noreturn"] = true;
         if (const auto reason = noreturn_reasons_.find(function.start); reason != noreturn_reasons_.end()) item["reason"] = reason->second;
         result.push_back(std::move(item));
@@ -1940,6 +2025,8 @@ Json Analyzer::get_function(const Json& arguments) const {
     result["address"] = address_json(function->start);
     result["end"] = address_json(function->end);
     result["name"] = function->name;
+    result["content_hash"] = function_content_hash(*function);
+    result["size"] = static_cast<std::uint64_t>(function->end - function->start);
     result["exported"] = function->exported;
     result["thunk"] = function->thunk;
     result["noreturn"] = noreturn_functions_.contains(function->start) || is_noreturn_target(function->start);
@@ -2968,6 +3055,237 @@ Json Analyzer::set_bookmark(const Json& arguments) {
     return result;
 }
 
+Json Analyzer::annotation_document(bool include_identity) const {
+    Json document = Json::object();
+    document["format"] = "paper-annotations";
+    document["version"] = 2;
+    if (include_identity) document["identity"] = identity_json();
+
+    auto write_entries = [&](const auto& source, std::string_view kind, std::string_view value_key) {
+        Json result = Json::array();
+        std::vector<std::pair<Address, std::string>> sorted(source.begin(), source.end());
+        std::sort(sorted.begin(), sorted.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
+        for (const auto& [address, value] : sorted) {
+            Json item = Json::object();
+            item["address"] = address_json(address);
+            item["kind"] = std::string(kind);
+            item[std::string(value_key)] = value;
+            if (const auto* function = function_at(address)) {
+                item["function_start"] = address_json(function->start);
+                item["function_offset"] = static_cast<std::uint64_t>(address - function->start);
+                item["function_hash"] = function_content_hash(*function);
+            }
+            result.push_back(std::move(item));
+        }
+        return result;
+    };
+    document["names"] = write_entries(names_, "name", "name");
+    document["comments"] = write_entries(comments_, "comment", "comment");
+    document["bookmarks"] = write_entries(bookmarks_, "bookmark", "comment");
+    return document;
+}
+
+bool Analyzer::apply_annotation(Address address, std::string_view kind, std::string_view value) {
+    if (!address) return false;
+    if (kind == "name") {
+        if (value.empty()) names_.erase(address);
+        else names_[address] = std::string(value);
+        if (const auto it = function_index_.find(address); it != function_index_.end()) {
+            auto& function = functions_[it->second];
+            if (value.empty()) {
+                function.name = "sub_" + address_string(address).substr(2);
+                for (const auto& symbol : image_.exports()) if (symbol.address == address) { function.name = symbol.name; break; }
+            } else {
+                function.name = std::string(value);
+            }
+        }
+        return true;
+    }
+    if (kind == "comment") {
+        if (value.empty()) comments_.erase(address);
+        else comments_[address] = std::string(value);
+        return true;
+    }
+    if (kind == "bookmark") {
+        if (value.empty()) bookmarks_.erase(address);
+        else bookmarks_[address] = std::string(value);
+        return true;
+    }
+    return false;
+}
+
+Json Analyzer::export_annotations(const Json& arguments) const {
+    std::shared_lock lock(mutex_);
+    const auto document = annotation_document(true);
+    const auto* path_value = arguments.find("path");
+    if (!path_value) return document;
+    Json result = document;
+    if (!path_value->is_string() || path_value->as_string().empty()) {
+        result["ok"] = false;
+        result["error"] = "path must be a non-empty string";
+        return result;
+    }
+    const auto path = path_value->as_string();
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        result["ok"] = false;
+        result["error"] = "cannot write annotations: " + path;
+        return result;
+    }
+    output << document.dump() << '\n';
+    result["ok"] = output.good();
+    result["path"] = path;
+    if (!output.good()) result["error"] = "annotation write failed: " + path;
+    return result;
+}
+
+Json Analyzer::import_annotations(const Json& arguments) {
+    Json document;
+    std::string source_path;
+    if (const auto* path = arguments.find("path"); path && path->is_string()) {
+        source_path = path->as_string();
+        std::ifstream input(source_path, std::ios::binary);
+        if (!input) {
+            Json result = Json::object();
+            result["ok"] = false;
+            result["error"] = "annotations not found: " + source_path;
+            return result;
+        }
+        try {
+            document = Json::parse(std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()));
+        } catch (const std::exception& exception) {
+            Json result = Json::object();
+            result["ok"] = false;
+            result["error"] = std::string("invalid annotations: ") + exception.what();
+            return result;
+        }
+    } else if (const auto* supplied = arguments.find("annotations")) {
+        document = *supplied;
+    } else {
+        Json result = Json::object();
+        result["ok"] = false;
+        result["error"] = "path or annotations is required";
+        return result;
+    }
+    if (!document.is_object()) {
+        Json result = Json::object();
+        result["ok"] = false;
+        result["error"] = "annotations document must be an object";
+        return result;
+    }
+
+    std::shared_lock read_lock(mutex_);
+    if (image_.info().path.empty()) {
+        Json result = Json::object();
+        result["ok"] = false;
+        result["error"] = "no open image";
+        return result;
+    }
+    const auto* identity = document.find("identity");
+    const auto old_hash = identity && identity->is_object() && identity->find("sha256") ? identity->find("sha256")->string_or("") : "";
+    const bool identity_match = !old_hash.empty() && old_hash == image_.info().sha256;
+    const bool allow_address_fallback = arguments.find("allow_address_fallback") && arguments.find("allow_address_fallback")->as_bool();
+
+    struct Pending {
+        Address old_address = 0;
+        std::string kind;
+        std::string value;
+        std::string function_hash;
+        Address function_start = 0;
+        std::uint64_t function_offset = 0;
+    };
+    std::vector<Pending> pending;
+    auto read_entries = [&](const Json* entries, std::string_view kind, std::string_view value_key) {
+        if (!entries || !entries->is_array()) return;
+        for (const auto& item : entries->array_items()) {
+            if (!item.is_object()) continue;
+            const auto address = parse_address_value(item.find("address"));
+            const auto* value = item.find(value_key);
+            if (!address || !*address || !value || !value->is_string()) continue;
+            Pending entry;
+            entry.old_address = *address;
+            entry.kind = std::string(kind);
+            entry.value = value->as_string();
+            if (const auto* hash = item.find("function_hash"); hash && hash->is_string()) entry.function_hash = hash->as_string();
+            entry.function_start = parse_address_value(item.find("function_start")).value_or(0);
+            if (const auto* offset = item.find("function_offset"); offset && offset->is_number()) entry.function_offset = offset->as_u64();
+            pending.push_back(std::move(entry));
+        }
+    };
+    read_entries(document.find("names"), "name", "name");
+    read_entries(document.find("comments"), "comment", "comment");
+    read_entries(document.find("bookmarks"), "bookmark", "comment");
+
+    std::unordered_map<Address, Address> explicit_map;
+    if (const auto* map = arguments.find("address_map"); map && map->is_object()) {
+        for (const auto& [old_address, new_value] : map->object_items()) {
+            std::uint64_t parsed = 0;
+            const auto old_begin = old_address.size() > 2 && old_address[0] == '0' && (old_address[1] == 'x' || old_address[1] == 'X') ? old_address.data() + 2 : old_address.data();
+            const auto old_end = old_address.data() + old_address.size();
+            if (std::from_chars(old_begin, old_end, parsed, 16).ec != std::errc{}) continue;
+            if (const auto target = parse_address_value(&new_value)) explicit_map[parsed] = *target;
+        }
+    }
+
+    std::unordered_map<std::string, std::vector<const Function*>> by_hash;
+    for (const auto& function : functions_) by_hash[function_content_hash(function)].push_back(&function);
+    read_lock.unlock();
+
+    std::size_t applied = 0;
+    std::size_t skipped = 0;
+    std::vector<std::string> skip_reasons;
+    std::unique_lock write_lock(mutex_);
+    for (const auto& entry : pending) {
+        Address target = 0;
+        std::string reason;
+        if (const auto mapped = explicit_map.find(entry.old_address); mapped != explicit_map.end()) {
+            target = mapped->second;
+        } else if (identity_match) {
+            target = entry.old_address;
+            if (!entry.function_hash.empty()) {
+                const auto* function = function_at(target);
+                if (!function || function_content_hash(*function) != entry.function_hash) {
+                    target = 0;
+                    reason = "function hash mismatch at original address";
+                }
+            }
+        } else if (!entry.function_hash.empty()) {
+            const auto candidates = by_hash.find(entry.function_hash);
+            if (candidates != by_hash.end() && candidates->second.size() == 1) {
+                const auto* function = candidates->second.front();
+                target = function->start + entry.function_offset;
+                if (target >= function->end) { target = 0; reason = "function offset is outside matched function"; }
+            } else {
+                reason = candidates == by_hash.end() ? "function content hash not found" : "function content hash is ambiguous";
+            }
+        } else if (allow_address_fallback) {
+            target = entry.old_address;
+        } else {
+            reason = "binary identity differs and annotation has no function hash";
+        }
+        if (!target || !apply_annotation(target, entry.kind, entry.value)) {
+            ++skipped;
+            if (skip_reasons.size() < 8) skip_reasons.push_back(reason.empty() ? "target could not be resolved" : reason);
+            continue;
+        }
+        ++applied;
+    }
+    Json result = Json::object();
+    result["ok"] = true;
+    if (!source_path.empty()) result["path"] = source_path;
+    result["identity_match"] = identity_match;
+    result["applied"] = static_cast<std::uint64_t>(applied);
+    result["skipped"] = static_cast<std::uint64_t>(skipped);
+    result["source_sha256"] = old_hash;
+    result["target_sha256"] = image_.info().sha256;
+    if (!skip_reasons.empty()) {
+        Json reasons = Json::array();
+        for (const auto& reason : skip_reasons) reasons.push_back(reason);
+        result["skip_reasons"] = std::move(reasons);
+    }
+    return result;
+}
+
 Json Analyzer::save_database(const Json& arguments) {
     std::unique_lock lock(mutex_);
     std::string path = arguments.find("path") ? arguments.find("path")->string_or("") : "";
@@ -2979,39 +3297,10 @@ Json Analyzer::save_database(const Json& arguments) {
         return result;
     }
 
-    Json document = Json::object();
-    document["version"] = 1;
+    Json document = annotation_document(true);
+    document["format"] = "paper-database";
+    document["version"] = 2;
     document["image"] = image_.info().path;
-    Json names = Json::array();
-    std::vector<std::pair<Address, std::string>> sorted_names(names_.begin(), names_.end());
-    std::sort(sorted_names.begin(), sorted_names.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
-    for (const auto& [address, name] : sorted_names) {
-        Json item = Json::object();
-        item["address"] = address_json(address);
-        item["name"] = name;
-        names.push_back(std::move(item));
-    }
-    document["names"] = std::move(names);
-    Json comments = Json::array();
-    std::vector<std::pair<Address, std::string>> sorted_comments(comments_.begin(), comments_.end());
-    std::sort(sorted_comments.begin(), sorted_comments.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
-    for (const auto& [address, comment] : sorted_comments) {
-        Json item = Json::object();
-        item["address"] = address_json(address);
-        item["comment"] = comment;
-        comments.push_back(std::move(item));
-    }
-    document["comments"] = std::move(comments);
-    Json bookmarks = Json::array();
-    std::vector<std::pair<Address, std::string>> sorted_bookmarks(bookmarks_.begin(), bookmarks_.end());
-    std::sort(sorted_bookmarks.begin(), sorted_bookmarks.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
-    for (const auto& [address, comment] : sorted_bookmarks) {
-        Json item = Json::object();
-        item["address"] = address_json(address);
-        item["comment"] = comment;
-        bookmarks.push_back(std::move(item));
-    }
-    document["bookmarks"] = std::move(bookmarks);
 
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output) {
@@ -3048,53 +3337,243 @@ Json Analyzer::load_database(const Json& arguments) {
         result["error"] = "no open image or database path";
         return result;
     }
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        result["ok"] = false;
-        result["error"] = "database not found: " + path;
-        return result;
-    }
-    try {
-        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-        const Json document = Json::parse(text);
-        std::unordered_map<Address, std::string> names;
-        std::unordered_map<Address, std::string> comments;
-        std::unordered_map<Address, std::string> bookmarks;
-        auto read_entries = [](const Json* array, auto& output, std::string_view value_key) {
-            if (!array || !array->is_array()) return;
-            for (const auto& item : array->array_items()) {
-                const auto address = parse_address_value(item.find("address"));
-                const auto* value = item.find(value_key);
-                if (address && value && value->is_string() && *address) output[*address] = value->as_string();
-            }
-        };
-        read_entries(document.find("names"), names, "name");
-        read_entries(document.find("comments"), comments, "comment");
-        read_entries(document.find("bookmarks"), bookmarks, "comment");
-
+    Json import_args = arguments;
+    import_args["path"] = path;
+    result = import_annotations(import_args);
+    if (result.find("ok") && result.find("ok")->as_bool()) {
         std::unique_lock lock(mutex_);
-        names_ = std::move(names);
-        comments_ = std::move(comments);
-        bookmarks_ = std::move(bookmarks);
         database_path_ = path;
-        for (auto& function : functions_) {
-            if (const auto custom = names_.find(function.start); custom != names_.end()) {
-                function.name = custom->second;
-                continue;
-            }
-            function.name = "sub_" + address_string(function.start).substr(2);
-            for (const auto& symbol : image_.exports()) {
-                if (symbol.address == function.start) { function.name = symbol.name; break; }
-            }
-        }
-        result["ok"] = true;
         result["path"] = path;
         result["name_count"] = static_cast<std::uint64_t>(names_.size());
         result["comment_count"] = static_cast<std::uint64_t>(comments_.size());
         result["bookmark_count"] = static_cast<std::uint64_t>(bookmarks_.size());
-    } catch (const std::exception& exception) {
+    }
+    return result;
+}
+
+Json Analyzer::diff_binary(const Json& arguments) const {
+    const auto path_a = arguments.find("path_a") ? arguments.find("path_a")->string_or("") : "";
+    const auto path_b = arguments.find("path_b") ? arguments.find("path_b")->string_or("") : "";
+    Json result = Json::object();
+    if (path_a.empty() || path_b.empty()) {
         result["ok"] = false;
-        result["error"] = std::string("invalid database: ") + exception.what();
+        result["error"] = "path_a and path_b are required";
+        return result;
+    }
+    Analyzer left;
+    Analyzer right;
+    std::string error;
+    if (!left.open_file(path_a, error)) {
+        result["ok"] = false;
+        result["error"] = "cannot open path_a: " + error;
+        return result;
+    }
+    if (!right.open_file(path_b, error)) {
+        result["ok"] = false;
+        result["error"] = "cannot open path_b: " + error;
+        return result;
+    }
+
+    struct FunctionRef {
+        const Function* function = nullptr;
+        std::string hash;
+        std::string neighborhood;
+        std::string strings;
+    };
+    auto build_refs = [](const Analyzer& analyzer) {
+        std::vector<FunctionRef> refs;
+        std::shared_lock lock(analyzer.mutex_);
+        refs.reserve(analyzer.functions_.size());
+        auto strings_key = [&](const Function& function) {
+            std::vector<std::string> values;
+            const auto begin = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.start,
+                [](const Instruction& instruction, Address value) { return instruction.address < value; });
+            const auto end = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.end,
+                [](const Instruction& instruction, Address value) { return instruction.address < value; });
+            for (auto it = begin; it != end; ++it) {
+                if (!it->target) continue;
+                const auto found = std::find_if(analyzer.strings_.begin(), analyzer.strings_.end(), [&](const StringLiteral& string) {
+                    return string.address == *it->target;
+                });
+                if (found != analyzer.strings_.end()) values.push_back(found->value);
+            }
+            std::sort(values.begin(), values.end());
+            values.erase(std::unique(values.begin(), values.end()), values.end());
+            std::ostringstream key;
+            for (const auto& value : values) key << value.size() << ':' << value << '|';
+            return key.str();
+        };
+        auto neighborhood_key = [&](const Function& function) {
+            std::vector<std::string> values;
+            const auto begin = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.start,
+                [](const Instruction& instruction, Address value) { return instruction.address < value; });
+            const auto end = std::lower_bound(analyzer.instructions_.begin(), analyzer.instructions_.end(), function.end,
+                [](const Instruction& instruction, Address value) { return instruction.address < value; });
+            for (auto it = begin; it != end; ++it) {
+                if ((it->kind != InstructionKind::Call && it->kind != InstructionKind::IndirectCall) || !it->target) continue;
+                if (const auto* callee = analyzer.function_at(*it->target)) values.push_back(analyzer.function_content_hash(*callee));
+                else {
+                    const auto import = std::find_if(analyzer.image_.imports().begin(), analyzer.image_.imports().end(), [&](const ImportSymbol& symbol) { return symbol.thunk == *it->target; });
+                    if (import != analyzer.image_.imports().end()) values.push_back(import->library + "!" + import->name);
+                }
+            }
+            std::sort(values.begin(), values.end());
+            std::ostringstream key;
+            for (const auto& value : values) key << value.size() << ':' << value << '|';
+            return key.str();
+        };
+        for (const auto& function : analyzer.functions_) {
+            refs.push_back(FunctionRef{&function, analyzer.function_content_hash(function), neighborhood_key(function), strings_key(function)});
+        }
+        return refs;
+    };
+
+    const auto old_functions = build_refs(left);
+    const auto new_functions = build_refs(right);
+    std::vector<int> matched(old_functions.size(), -1);
+    std::vector<bool> new_used(new_functions.size(), false);
+    auto unique_candidate = [&](std::size_t old_index, auto selector) -> int {
+        int candidate = -1;
+        for (std::size_t index = 0; index < new_functions.size(); ++index) {
+            if (new_used[index] || !selector(old_functions[old_index], new_functions[index])) continue;
+            if (candidate != -1) return -1; // ambiguous evidence is never guessed
+            candidate = static_cast<int>(index);
+        }
+        return candidate;
+    };
+    auto generated_name = [](std::string_view name) { return name.rfind("sub_", 0) == 0; };
+    for (std::size_t i = 0; i < old_functions.size(); ++i) {
+        const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) {
+            return !generated_name(old_ref.function->name) && !generated_name(new_ref.function->name) && old_ref.function->name == new_ref.function->name;
+        });
+        if (candidate >= 0) { matched[i] = candidate; new_used[static_cast<std::size_t>(candidate)] = true; }
+    }
+    for (std::size_t i = 0; i < old_functions.size(); ++i) if (matched[i] < 0) {
+        const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) { return old_ref.hash == new_ref.hash; });
+        if (candidate >= 0) { matched[i] = candidate; new_used[static_cast<std::size_t>(candidate)] = true; }
+    }
+    for (std::size_t i = 0; i < old_functions.size(); ++i) if (matched[i] < 0) {
+        const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) { return !old_ref.neighborhood.empty() && old_ref.neighborhood == new_ref.neighborhood; });
+        if (candidate >= 0) { matched[i] = candidate; new_used[static_cast<std::size_t>(candidate)] = true; }
+    }
+    for (std::size_t i = 0; i < old_functions.size(); ++i) if (matched[i] < 0) {
+        const auto candidate = unique_candidate(i, [&](const FunctionRef& old_ref, const FunctionRef& new_ref) { return !old_ref.strings.empty() && old_ref.strings == new_ref.strings; });
+        if (candidate >= 0) { matched[i] = candidate; new_used[static_cast<std::size_t>(candidate)] = true; }
+    }
+
+    Json matches = Json::array();
+    Json unchanged = Json::array();
+    Json moved = Json::array();
+    Json changed = Json::array();
+    Json removed = Json::array();
+    Json added = Json::array();
+    Json address_map = Json::object();
+    std::uint64_t unchanged_count = 0;
+    std::uint64_t moved_count = 0;
+    std::uint64_t changed_count = 0;
+    for (std::size_t i = 0; i < old_functions.size(); ++i) {
+        if (matched[i] < 0) {
+            removed.push_back(left.function_identity_json(*old_functions[i].function));
+            continue;
+        }
+        const auto& old_ref = old_functions[i];
+        const auto& new_ref = new_functions[static_cast<std::size_t>(matched[i])];
+        Json item = Json::object();
+        item["old"] = left.function_identity_json(*old_ref.function);
+        item["new"] = right.function_identity_json(*new_ref.function);
+        item["match"] = old_ref.hash == new_ref.hash ? "content_hash" : (!generated_name(old_ref.function->name) && old_ref.function->name == new_ref.function->name ? "name" : "structural");
+        const bool same_hash = old_ref.hash == new_ref.hash;
+        const bool same_address = old_ref.function->start == new_ref.function->start;
+        const char* category = same_hash && same_address ? "unchanged" : same_hash ? "moved" : "changed";
+        item["status"] = category;
+        matches.push_back(item);
+        address_map[address_string(old_ref.function->start)] = address_json(new_ref.function->start);
+        if (std::string_view(category) == "unchanged") { unchanged.push_back(item); ++unchanged_count; }
+        else if (std::string_view(category) == "moved") { moved.push_back(item); ++moved_count; }
+        else { changed.push_back(item); ++changed_count; }
+    }
+    for (std::size_t i = 0; i < new_functions.size(); ++i) if (!new_used[i]) added.push_back(right.function_identity_json(*new_functions[i].function));
+    result["ok"] = true;
+    result["path_a"] = path_a;
+    result["path_b"] = path_b;
+    result["identity_a"] = left.identity_json();
+    result["identity_b"] = right.identity_json();
+    result["matches"] = std::move(matches);
+    result["unchanged"] = std::move(unchanged);
+    result["moved"] = std::move(moved);
+    result["changed"] = std::move(changed);
+    result["removed"] = std::move(removed);
+    result["added"] = std::move(added);
+    result["address_map"] = std::move(address_map);
+    result["unchanged_count"] = unchanged_count;
+    result["moved_count"] = moved_count;
+    result["changed_count"] = changed_count;
+    result["removed_count"] = static_cast<std::uint64_t>(result.find("removed")->array_items().size());
+    result["added_count"] = static_cast<std::uint64_t>(result.find("added")->array_items().size());
+    return result;
+}
+
+Json Analyzer::export_snapshot(const Json& arguments) const {
+    Json result = Json::object();
+    result["format"] = "paper-snapshot";
+    result["version"] = 1;
+    result["identity"] = identity_json();
+    result["module"] = module_info();
+    result["stats"] = analysis_stats();
+
+    Json sections = Json::array();
+    for (const auto& section : image_.sections()) {
+        Json item = Json::object();
+        item["name"] = section.name;
+        item["rva"] = section.rva;
+        item["start"] = address_json(section.start);
+        item["end"] = address_json(section.end);
+        item["virtual_size"] = section.virtual_size;
+        item["raw_size"] = section.raw_size;
+        item["characteristics"] = section.characteristics;
+        sections.push_back(std::move(item));
+    }
+    result["sections"] = std::move(sections);
+    Json functions = Json::array();
+    for (const auto& function : functions_) {
+        Json item = function_identity_json(function);
+        item["exported"] = function.exported;
+        item["thunk"] = function.thunk;
+        item["block_count"] = static_cast<std::uint64_t>(function.blocks.size());
+        if (const auto comment = comments_.find(function.start); comment != comments_.end()) item["comment"] = comment->second;
+        functions.push_back(std::move(item));
+    }
+    result["functions"] = std::move(functions);
+    result["imports"] = list_imports(Json::object());
+    result["exports"] = list_exports(Json::object());
+    result["runtime_functions"] = list_runtime_functions(Json::object());
+    result["vtables"] = list_vtables(Json::object());
+    result["rtti"] = list_rtti(Json::object());
+    result["strings"] = list_strings(Json::object());
+    result["annotations"] = annotation_document(false);
+
+    if (!arguments.find("include_xrefs") || arguments.find("include_xrefs")->as_bool(true)) {
+        Json xrefs = Json::array();
+        for (const auto& [address, refs] : xrefs_to_) for (const auto& ref : refs) xrefs.push_back(xref_json(ref));
+        result["xrefs"] = std::move(xrefs);
+    }
+    if (arguments.find("include_instructions") && arguments.find("include_instructions")->as_bool()) {
+        Json instructions = Json::array();
+        for (const auto& instruction : instructions_) instructions.push_back(instruction_json(instruction));
+        result["instructions"] = std::move(instructions);
+    }
+    if (const auto* path = arguments.find("path"); path && path->is_string() && !path->as_string().empty()) {
+        const auto path_value = path->as_string();
+        std::ofstream output(path_value, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            result["ok"] = false;
+            result["error"] = "cannot write snapshot: " + path_value;
+            return result;
+        }
+        output << result.dump() << '\n';
+        result["ok"] = output.good();
+        result["path"] = path_value;
+        if (!output.good()) result["error"] = "snapshot write failed: " + path_value;
     }
     return result;
 }
@@ -3169,6 +3648,7 @@ Json Analyzer::analysis_stats() const {
     result["worker_count"] = stats_.worker_count;
     result["analysis_millis"] = stats_.analysis_millis;
     result["indexed_queries"] = true;
+    if (!image_.info().path.empty()) result["binary_identity"] = identity_json();
     return result;
 }
 
@@ -3332,6 +3812,14 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
         if (reject_unknown({"address", "enabled", "comment"})) return validation_error;
     } else if (name == "save_database" || name == "load_database") {
         if (reject_unknown({"path"})) return validation_error;
+    } else if (name == "diff_binary") {
+        if (reject_unknown({"path_a", "path_b"})) return validation_error;
+    } else if (name == "export_annotations") {
+        if (reject_unknown({"path"})) return validation_error;
+    } else if (name == "import_annotations") {
+        if (reject_unknown({"path", "annotations", "address_map", "allow_address_fallback"})) return validation_error;
+    } else if (name == "export_snapshot") {
+        if (reject_unknown({"path", "include_xrefs", "include_instructions"})) return validation_error;
     } else if (name == "decode_asset") {
         if (reject_unknown({"format", "path"})) return validation_error;
     }
@@ -3363,6 +3851,8 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
         Json envelope = Json::object();
         envelope["ok"] = true;
         envelope["output"] = path;
+        const auto identity = module_info();
+        if (const auto* module_identity = identity.find("identity")) envelope["binary_identity"] = *module_identity;
         envelope["result"] = std::move(value);
         return envelope;
     };
@@ -3416,6 +3906,10 @@ Json Analyzer::call_tool(std::string_view name, const Json& arguments, bool& ok)
         if (name == "set_bookmark") return set_bookmark(arguments);
         if (name == "save_database") return save_database(arguments);
         if (name == "load_database") return load_database(arguments);
+        if (name == "diff_binary") return diff_binary(arguments);
+        if (name == "export_annotations") return export_annotations(arguments);
+        if (name == "import_annotations") return import_annotations(arguments);
+        if (name == "export_snapshot") return export_snapshot(arguments);
         if (name == "decode_asset") return decode_asset(arguments);
         ok = false;
         Json error = Json::object();
