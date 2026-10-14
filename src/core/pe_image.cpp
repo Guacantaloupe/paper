@@ -1,6 +1,7 @@
 #include "paper/core/pe_image.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -10,6 +11,127 @@
 
 namespace paper {
 namespace {
+
+// Small dependency-free SHA-256 implementation. Paper is built as a single
+// portable core library on MSVC and on the Linux smoke-test host, so pulling
+// OpenSSL in just for file identity would make the Windows build needlessly
+// fragile. The input is intentionally a byte range, not a C string.
+class Sha256 {
+public:
+    Sha256() { reset(); }
+
+    void reset() {
+        state_ = {0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+                  0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u};
+        buffer_size_ = 0;
+        bit_count_ = 0;
+    }
+
+    void update(const std::uint8_t* data, std::size_t size) {
+        if (!data || size == 0) return;
+        bit_count_ += static_cast<std::uint64_t>(size) * 8u;
+        while (size != 0) {
+            const auto take = std::min<std::size_t>(size, 64 - buffer_size_);
+            std::memcpy(buffer_.data() + buffer_size_, data, take);
+            buffer_size_ += take;
+            data += take;
+            size -= take;
+            if (buffer_size_ == 64) {
+                transform(buffer_.data());
+                buffer_size_ = 0;
+            }
+        }
+    }
+
+    std::string finish() const {
+        Sha256 copy = *this;
+        copy.buffer_[copy.buffer_size_++] = 0x80;
+        if (copy.buffer_size_ > 56) {
+            while (copy.buffer_size_ < 64) copy.buffer_[copy.buffer_size_++] = 0;
+            copy.transform(copy.buffer_.data());
+            copy.buffer_size_ = 0;
+        }
+        while (copy.buffer_size_ < 56) copy.buffer_[copy.buffer_size_++] = 0;
+        for (int shift = 56; shift >= 0; shift -= 8)
+            copy.buffer_[copy.buffer_size_++] = static_cast<std::uint8_t>(copy.bit_count_ >> shift);
+        copy.transform(copy.buffer_.data());
+
+        static constexpr char digits[] = "0123456789abcdef";
+        std::string result;
+        result.resize(64);
+        for (std::size_t i = 0; i < copy.state_.size(); ++i) {
+            for (unsigned byte = 0; byte < 4; ++byte) {
+                const auto value = static_cast<std::uint8_t>(copy.state_[i] >> (24 - byte * 8));
+                result[(i * 4 + byte) * 2] = digits[value >> 4];
+                result[(i * 4 + byte) * 2 + 1] = digits[value & 0xf];
+            }
+        }
+        return result;
+    }
+
+private:
+    static constexpr std::array<std::uint32_t, 64> round_constants_ = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+        0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+        0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+        0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+        0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+        0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+        0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+        0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u};
+
+    static std::uint32_t rotate_right(std::uint32_t value, unsigned amount) {
+        return (value >> amount) | (value << (32 - amount));
+    }
+
+    void transform(const std::uint8_t* block) {
+        std::array<std::uint32_t, 64> schedule{};
+        for (unsigned i = 0; i < 16; ++i) {
+            schedule[i] = (static_cast<std::uint32_t>(block[i * 4]) << 24) |
+                          (static_cast<std::uint32_t>(block[i * 4 + 1]) << 16) |
+                          (static_cast<std::uint32_t>(block[i * 4 + 2]) << 8) |
+                          static_cast<std::uint32_t>(block[i * 4 + 3]);
+        }
+        for (unsigned i = 16; i < 64; ++i) {
+            const auto s0 = rotate_right(schedule[i - 15], 7) ^ rotate_right(schedule[i - 15], 18) ^ (schedule[i - 15] >> 3);
+            const auto s1 = rotate_right(schedule[i - 2], 17) ^ rotate_right(schedule[i - 2], 19) ^ (schedule[i - 2] >> 10);
+            schedule[i] = schedule[i - 16] + s0 + schedule[i - 7] + s1;
+        }
+        auto a = state_[0]; auto b = state_[1]; auto c = state_[2]; auto d = state_[3];
+        auto e = state_[4]; auto f = state_[5]; auto g = state_[6]; auto h = state_[7];
+        for (unsigned i = 0; i < 64; ++i) {
+            const auto s1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25);
+            const auto choose = (e & f) ^ ((~e) & g);
+            const auto temp1 = h + s1 + choose + round_constants_[i] + schedule[i];
+            const auto s0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22);
+            const auto majority = (a & b) ^ (a & c) ^ (b & c);
+            const auto temp2 = s0 + majority;
+            h = g; g = f; f = e; e = d + temp1;
+            d = c; c = b; b = a; a = temp1 + temp2;
+        }
+        state_[0] += a; state_[1] += b; state_[2] += c; state_[3] += d;
+        state_[4] += e; state_[5] += f; state_[6] += g; state_[7] += h;
+    }
+
+    std::array<std::uint32_t, 8> state_{};
+    std::array<std::uint8_t, 64> buffer_{};
+    std::size_t buffer_size_ = 0;
+    std::uint64_t bit_count_ = 0;
+};
+
+std::string sha256_bytes(const std::uint8_t* data, std::size_t size) {
+    Sha256 hash;
+    hash.update(data, size);
+    return hash.finish();
+}
 
 std::uint16_t u16(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
     if (offset + 2 > bytes.size()) return 0;
@@ -45,6 +167,10 @@ std::string section_name(const std::vector<std::uint8_t>& bytes, std::size_t off
 }
 
 } // namespace
+
+std::string PeImage::sha256(const std::uint8_t* data, std::size_t size) {
+    return sha256_bytes(data, size);
+}
 
 bool PeImage::load_file(const std::string& path, std::string& error) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -163,6 +289,29 @@ bool PeImage::parse(std::string& error) {
     if (directory_count_ > 5) parse_relocations(directories_[5].first, directories_[5].second, ignored);
     if (directory_count_ > 6) parse_debug(directories_[6].first, directories_[6].second, ignored);
     if (directory_count_ > 9) parse_tls(directories_[9].first, directories_[9].second, ignored);
+
+    // Identity is computed after the PE has been validated and section
+    // boundaries are known.  The full hash covers the exact on-disk bytes;
+    // the text hash covers executable section raw bytes in PE order; the
+    // pdata hash covers only the raw exception-directory range.  Keeping
+    // these separate lets a client distinguish a byte-for-byte replacement
+    // from a code-only or unwind-only rebuild without relying on timestamps.
+    info_.sha256 = sha256_bytes(bytes_.data(), bytes_.size());
+    Sha256 text_hash;
+    bool saw_text = false;
+    for (const auto& section : sections_) {
+        if (!section.executable || section.bytes.empty()) continue;
+        text_hash.update(section.bytes.data(), section.bytes.size());
+        saw_text = true;
+    }
+    info_.text_sha256 = saw_text ? text_hash.finish() : std::string{};
+    if (directory_count_ > 3 && directories_[3].first != 0 && directories_[3].second != 0) {
+        const auto pdata_offset = rva_to_file_offset(directories_[3].first);
+        if (pdata_offset && *pdata_offset < bytes_.size()) {
+            const auto count = std::min<std::size_t>(directories_[3].second, bytes_.size() - *pdata_offset);
+            info_.pdata_sha256 = sha256_bytes(bytes_.data() + *pdata_offset, count);
+        }
+    }
     return true;
 }
 
