@@ -3270,6 +3270,10 @@ Json Analyzer::import_annotations(const Json& arguments) {
         } else {
             reason = "binary identity differs and annotation has no function hash";
         }
+        if (target && !section_at(target)) {
+            target = 0;
+            if (reason.empty()) reason = "mapped address is outside the target image";
+        }
         if (!target || !apply_annotation(target, entry.kind, entry.value)) {
             ++skipped;
             if (skip_reasons.size() < 8) skip_reasons.push_back(reason.empty() ? "target could not be resolved" : reason);
