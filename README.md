@@ -1,6 +1,6 @@
 # Paper
 
-Paper is a fast, local, IDA-style static analysis workbench. The v0.2 core is deliberately split into two parts:
+Paper is a fast, local, IDA-style static analysis workbench. The v0.3 core is deliberately split into two parts:
 
 - `paper_core`: PE loading, executable-section disassembly, function discovery, CFG recovery, imports/exports, strings, names, comments, bookmarks, persistent sidecar databases, indexed cross-references, direct and relative jump-table facts, bounded block-local data-flow and indirect-target resolution, stack-frame slots, ABI-only function signatures, register-relative object-field accesses, noreturn propagation, MSVC RTTI/vtable mapping, x64 unwind and language-specific exception data, TLS callbacks, relocations, resources, and CodeView/PDB metadata.
 - `paper_ai`: a line-oriented MCP-compatible stdio server. AI clients can call the same analysis engine through structured tools without scraping a GUI.
