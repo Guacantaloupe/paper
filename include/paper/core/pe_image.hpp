@@ -28,6 +28,9 @@ public:
     const std::vector<ResourceEntry>& resources() const noexcept { return resources_; }
     const PdbInfo& pdb_info() const noexcept { return pdb_info_; }
 
+    // Shared by the analyzer's per-function normalized-content hashes.
+    static std::string sha256(const std::uint8_t* data, std::size_t size);
+
     std::optional<std::uint32_t> rva_to_file_offset(std::uint32_t rva) const;
     const Section* section_for_rva(std::uint32_t rva) const;
     const Section* section_for_address(Address address) const;
