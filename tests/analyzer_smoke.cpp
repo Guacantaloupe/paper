@@ -82,7 +82,31 @@ std::vector<std::uint8_t> make_fixture() {
 } // namespace
 
 int main() {
-    const auto path = std::filesystem::temp_directory_path() / "paper_analyzer_smoke_fixture.exe";
+    // 临时目录的选取：先试 %TEMP%，**打不开就退到当前工作目录**。
+    //
+    // 为什么不是一句 temp_directory_path() 就完事：这个测试原先直接写
+    // %TEMP%，而在受限环境里（本项目的 DSH 文件沙箱就是）被约束的子进程
+    // 拿不到 %TEMP% 的写权限——ofstream 打开失败，GetLastError 报 5
+    // （ERROR_ACCESS_DENIED）、errno 报 13，于是第 90 行的 assert(output)
+    // 失败，整份测试在那种环境里**根本跑不起来**。
+    //
+    // 而失败信息是 "Assertion failed: output"，看起来像测试自己的 bug，
+    // 不像环境问题——这是它难查的原因。
+    //
+    // 退到工作目录是安全的：测试自己清理它创建的每个文件（见文件末尾的
+    // 四个 remove），而这些文件名都带 paper_analyzer_smoke 前缀。
+    std::filesystem::path scratch = std::filesystem::temp_directory_path();
+    {
+        std::ofstream probe(scratch / "paper_analyzer_smoke_write_probe.tmp",
+                            std::ios::binary | std::ios::trunc);
+        if (probe) {
+            probe.close();
+            std::filesystem::remove(scratch / "paper_analyzer_smoke_write_probe.tmp");
+        } else {
+            scratch = std::filesystem::current_path();
+        }
+    }
+    const auto path = scratch / "paper_analyzer_smoke_fixture.exe";
     std::filesystem::remove(path.string() + ".paper.json");
     const auto bytes = make_fixture();
     {
