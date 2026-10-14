@@ -31,7 +31,43 @@ When enabled, Zydis is used only behind `X86Decoder`; the function, CFG, xref, a
 
 `paper_ai` speaks newline-delimited JSON-RPC with the MCP method names `initialize`, `tools/list`, and `tools/call`. The available tools include:
 
-`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `read_struct`, `describe_address`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `find_instructions`, `source_locations`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `list_vtables`, `vtable_of`, `function_strings`, `list_runtime_functions`, `list_switches`, `stack_variables`, `function_dataflow`, `function_signature`, `object_fields`, `function_xrefs`, `analyze_function`, `list_noreturn_functions`, `list_rtti`, `list_exceptions`, `list_tls_callbacks`, `list_relocations`, `list_resources`, `pdb_info`, `load_symbols`, `list_symbols`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, `decode_asset`, and `analysis_stats`.
+`open_binary`, `module_info`, `list_sections`, `list_segments`, `list_functions`, `get_function`, `disassemble`, `read_bytes`, `read_struct`, `describe_address`, `xrefs_to`, `xrefs_from`, `cfg`, `search_strings`, `list_strings`, `find_instructions`, `source_locations`, `search_bytes`, `list_imports`, `list_exports`, `list_names`, `list_bookmarks`, `list_vtables`, `vtable_of`, `function_strings`, `list_runtime_functions`, `list_switches`, `stack_variables`, `function_dataflow`, `function_signature`, `object_fields`, `function_xrefs`, `analyze_function`, `list_noreturn_functions`, `list_rtti`, `list_exceptions`, `list_tls_callbacks`, `list_relocations`, `list_resources`, `pdb_info`, `load_symbols`, `list_symbols`, `call_graph`, `set_name`, `set_comment`, `set_bookmark`, `save_database`, `load_database`, `diff_binary`, `export_annotations`, `import_annotations`, `export_snapshot`, `decode_asset`, and `analysis_stats`.
+
+### EXE 更新与快照身份
+
+Paper 不把地址当作跨版本身份。`module_info` 会返回：
+
+- `sha256`：整个 PE 文件的精确 SHA-256；
+- `text_sha256`：按 PE 节顺序拼接可执行节原始字节后的 SHA-256；
+- `pdata_sha256`：异常目录（`.pdata`）原始字节的 SHA-256；
+- `identity`：包含路径、架构、镜像基址、镜像大小和上述指纹的稳定对象。
+
+`list_functions`、`get_function` 和快照中的每个函数都会返回 `content_hash`。它由解码后的指令边界和字节计算，并归一化相对分支、RIP 相对位移以及 PE 基址重定位，因此函数移动或整体重定位时仍可匹配；真实指令/常量变化仍会改变哈希。
+
+更新 EXE 时建议按以下顺序操作：
+
+```json
+{"tool":"diff_binary","path_a":"out/Sky-old.exe","path_b":"out/Sky-new.exe"}
+```
+
+`diff_binary` 按“显式名称 → 函数内容哈希 → 调用邻域 → 函数引用字符串”匹配，返回 `unchanged`、`moved`、`changed`、`added`、`removed` 以及 `address_map`。有歧义的匹配不会猜测。
+
+注解可单独迁移：
+
+```json
+{"tool":"export_annotations","path":"out/paper.annotations.json"}
+{"tool":"import_annotations","path":"out/paper.annotations.json"}
+```
+
+注解文件的每条名称、注释和书签都带有所在函数的 `function_hash` 与函数内偏移。二进制指纹不一致时，Paper 只按唯一函数哈希或显式 `address_map` 迁移；没有可验证证据的条目会跳过并说明原因，不会静默把旧地址写到新 EXE。`save_database` 生成的 `.paper.json` 也使用同一套身份和迁移规则。
+
+需要一次性给下游 AI 或离线工具使用时：
+
+```json
+{"tool":"export_snapshot","path":"out/Sky.paper.snapshot.json","include_xrefs":true}
+```
+
+快照包含身份、节、函数哈希、导入/导出、`.pdata`、虚表/RTTI、字符串、注解和（可选）完整 xrefs/指令，并在文件顶层保留 `format`/`version`，可直接判断它描述的是哪个 EXE。
 
 `list_vtables` reports read-only data runs containing executable function pointers together with data references that install the table. It also exposes the exact installer count and whether the boundary has two-or-more-installer or RTTI evidence; runs without that evidence are explicitly marked rather than silently presented as a proven table. `vtable_of` maps a known function address to its table slots. `xrefs_to` and `xrefs_from` accept either one `address` or an `addresses` array and now include the decoded instruction and containing function for every site; passing a function start to `xrefs_from` aggregates the function's outgoing references. `find_instructions` searches decoded instruction forms or contiguous sequences, while `source_locations` extracts only byte-proven check/log file, line, and expression tuples. Unknown argument names are rejected instead of silently falling back to a default query.
 
