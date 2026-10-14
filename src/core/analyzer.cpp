@@ -1316,14 +1316,39 @@ std::vector<Analyzer::RttiRecord> Analyzer::discover_rtti() const {
     auto rva_address = [&](std::uint32_t rva) -> std::optional<Address> {
         return image_.section_for_rva(rva) ? std::optional<Address>(image_.info().image_base + rva) : std::nullopt;
     };
+    // Read an MSVC RTTI type descriptor name.
+    //
+    // A type descriptor is a 16-byte header (8 on 32-bit) followed by a
+    // NUL-terminated mangled name. The previous version returned whatever
+    // bytes followed the header, up to 1024 bytes or a NUL, and accepted the
+    // result as long as it was non-empty. On Sky.exe that produced a record
+    // whose type_descriptor (0x140007465) sat inside .text and whose
+    // type_name was binary noise, which is not RTTI at all: it was a vtable
+    // candidate whose preceding pointer happened to point at code.
+    //
+    // Two independent checks are applied, and both are facts about MSVC RTTI
+    // rather than heuristics tuned to one sample:
+    //   * structural -- the descriptor must live in a non-executable section,
+    //     because a type descriptor is read-only data;
+    //   * semantic -- the name must be printable ASCII starting with ".?A",
+    //     the mangled prefix MSVC uses for class, struct, union and enum
+    //     type descriptors ("?AV" class, "?AU" struct, "?AW" enum).
     auto descriptor_name = [&](Address descriptor) {
         const auto offset = image_.info().pe32_plus ? 16u : 8u;
+        const auto* descriptor_section = image_.section_for_address(descriptor);
+        if (!descriptor_section || descriptor_section->executable) return std::string{};
         const auto* section = image_.section_for_address(descriptor + offset);
         if (!section || descriptor + offset < section->start) return std::string{};
         const auto position = static_cast<std::size_t>(descriptor + offset - section->start);
         if (position >= section->bytes.size()) return std::string{};
         std::string name;
-        for (std::size_t index = position; index < section->bytes.size() && index - position < 1024 && section->bytes[index] != 0; ++index) name.push_back(static_cast<char>(section->bytes[index]));
+        for (std::size_t index = position; index < section->bytes.size() && index - position < 1024; ++index) {
+            const auto byte = section->bytes[index];
+            if (byte == 0) break;
+            if (byte < 0x20 || byte > 0x7e) return std::string{};
+            name.push_back(static_cast<char>(byte));
+        }
+        if (name.size() < 4 || name.compare(0, 3, ".?A") != 0) return std::string{};
         return name;
     };
     for (const auto& table : discover_vtables()) {
