@@ -3185,6 +3185,13 @@ Json Analyzer::import_annotations(const Json& arguments) {
     const auto old_hash = identity && identity->is_object() && identity->find("sha256") ? identity->find("sha256")->string_or("") : "";
     const bool identity_match = !old_hash.empty() && old_hash == image_.info().sha256;
     const bool allow_address_fallback = arguments.find("allow_address_fallback") && arguments.find("allow_address_fallback")->as_bool();
+    if (old_hash.empty() && !allow_address_fallback) {
+        Json result = Json::object();
+        result["ok"] = false;
+        result["error"] = "annotations document has no binary sha256; refusing address-only import";
+        result["identity_required"] = true;
+        return result;
+    }
 
     struct Pending {
         Address old_address = 0;
