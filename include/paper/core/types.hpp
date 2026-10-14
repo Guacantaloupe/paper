@@ -179,6 +179,14 @@ struct ModuleInfo {
     std::uint32_t entry_rva = 0;
     std::uint32_t image_size = 0;
     bool pe32_plus = false;
+    // Stable content identities.  These are calculated from the exact file
+    // bytes (sha256), executable section bytes (text_sha256), and the raw
+    // exception-directory bytes (pdata_sha256).  Addresses are deliberately
+    // not part of these digests so a rebased/moved image can be recognised
+    // without silently reusing stale annotations.
+    std::string sha256;
+    std::string text_sha256;
+    std::string pdata_sha256;
     PdbInfo pdb;
 };
 
