@@ -125,7 +125,7 @@ Json McpServer::handle(const Json& request) {
         result["capabilities"] = std::move(capabilities);
         Json server_info = Json::object();
         server_info["name"] = "paper-ai";
-        server_info["version"] = "0.2.0";
+        server_info["version"] = "0.3.0";
         result["serverInfo"] = std::move(server_info);
         result["instructions"] = "Use tools/call with open_binary before querying the Paper analysis indexes.";
         return notification ? Json(nullptr) : rpc_result(request_id, std::move(result));
